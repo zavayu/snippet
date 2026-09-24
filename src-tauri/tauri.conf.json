@@ -13,10 +13,16 @@
     "windows": [
       {
         "title": "Snippet",
-        "width": 520,
-        "height": 560,
+        "width": 440,
+        "height": 240,
         "minWidth": 360,
-        "minHeight": 420
+        "minHeight": 220,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": true
       }
     ],
     "security": {
