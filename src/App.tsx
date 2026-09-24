@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   cursorPosition,
@@ -13,8 +14,19 @@ const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
 const POPUP_MAX_HEIGHT = 720;
 const POPUP_SHADOW_MARGIN = 24;
+const DEV_MODE_STORAGE_KEY = "snippet-dev-mode";
 
 type CaptureState = "waiting" | "captured" | "error";
+
+const QUICK_ACTIONS = ["explain", "summarize", "refine"] as const;
+
+type QuickAction = (typeof QUICK_ACTIONS)[number];
+
+const QUICK_ACTION_LABELS: Record<QuickAction, string> = {
+  explain: "Explain",
+  summarize: "Summarize",
+  refine: "Refine",
+};
 
 type CapturedSelection = {
   text: string;
@@ -27,13 +39,36 @@ type CaptureFailure = {
   message: string;
 };
 
+type PromptIntent =
+  | { kind: "quick-action"; action: QuickAction }
+  | { kind: "custom"; instruction: string };
+
+type ChatMessage = {
+  role: "system" | "user";
+  content: string;
+};
+
 function App() {
   const [captureState, setCaptureState] = useState<CaptureState>("waiting");
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
+  const [customInstruction, setCustomInstruction] = useState("");
+  const [promptPreview, setPromptPreview] = useState<ChatMessage[] | null>(null);
+  const [promptPreviewError, setPromptPreviewError] = useState<string | null>(null);
+  const [isPromptPreviewLoading, setIsPromptPreviewLoading] = useState(false);
+  const [isPromptPreviewExpanded, setIsPromptPreviewExpanded] = useState(false);
+  const [isDevModeEnabled, setIsDevModeEnabled] = useState(() => {
+    if (!import.meta.env.DEV) {
+      return false;
+    }
+
+    return window.localStorage.getItem(DEV_MODE_STORAGE_KEY) !== "off";
+  });
   const popupContentRef = useRef<HTMLDivElement>(null);
   const lastPositionedSelectionRef = useRef<CapturedSelection | null>(null);
+
+  const showDevelopmentPreviews = import.meta.env.DEV && isDevModeEnabled;
 
   useEffect(() => {
     const unlisten = Promise.all([
@@ -41,6 +76,10 @@ function App() {
         setSelection(event.payload);
         setErrorMessage(null);
         setIsSelectionExpanded(false);
+        setCustomInstruction("");
+        setPromptPreview(null);
+        setPromptPreviewError(null);
+        setIsPromptPreviewExpanded(false);
         setCaptureState("captured");
       }),
       listen<CaptureFailure>("selection-capture-failed", (event) => {
@@ -63,6 +102,12 @@ function App() {
       void unlisten.then((handlers: UnlistenFn[]) => handlers.forEach((handler) => handler()));
     };
   }, []);
+
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      window.localStorage.setItem(DEV_MODE_STORAGE_KEY, isDevModeEnabled ? "on" : "off");
+    }
+  }, [isDevModeEnabled]);
 
   useLayoutEffect(() => {
     let cancelled = false;
@@ -118,14 +163,53 @@ function App() {
       cancelled = true;
       window.cancelAnimationFrame(frame);
     };
-  }, [captureState, errorMessage, isSelectionExpanded, selection]);
+  }, [
+    captureState,
+    errorMessage,
+    isPromptPreviewLoading,
+    isPromptPreviewExpanded,
+    isSelectionExpanded,
+    promptPreview,
+    promptPreviewError,
+    selection,
+  ]);
+
+  const previewPrompt = async (intentOverride?: PromptIntent) => {
+    if (!selection || !showDevelopmentPreviews) {
+      return;
+    }
+
+    const instruction = customInstruction.trim();
+    const intent = intentOverride ?? (instruction
+      ? { kind: "custom", instruction }
+      : { kind: "quick-action", action: "explain" });
+
+    setIsPromptPreviewLoading(true);
+    setPromptPreview(null);
+    setPromptPreviewError(null);
+    setIsPromptPreviewExpanded(true);
+
+    try {
+      const messages = await invoke<ChatMessage[]>("preview_prompt", {
+        request: {
+          selectedText: selection.text,
+          intent,
+        },
+      });
+      setPromptPreview(messages);
+    } catch (error) {
+      setPromptPreviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsPromptPreviewLoading(false);
+    }
+  };
 
   return (
     <main className="min-h-screen overflow-hidden p-6 text-zinc-100">
       <section className="mx-auto w-full max-w-xl">
         <div ref={popupContentRef} className="rounded-[28px] bg-zinc-900 p-4 shadow-lg shadow-black/50">
           <header
-            className="relative -mx-4 -mt-4 mb-3 flex cursor-grab select-none items-center gap-3 pl-4 pr-10 pt-4 active:cursor-grabbing"
+            className="relative -mx-4 -mt-4 mb-3 flex cursor-grab select-none items-center gap-3 pl-4 pr-28 pt-4 active:cursor-grabbing"
             onMouseDown={(event) => {
               if (event.button === 0) {
                 void getCurrentWindow().startDragging().catch(() => undefined);
@@ -137,14 +221,56 @@ function App() {
                 S
               </div>
             </div>
-            <form className="min-w-0 flex-1" onMouseDown={(event) => event.stopPropagation()}>
+            <form
+              className="min-w-0 flex-1"
+              onMouseDown={(event) => event.stopPropagation()}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (showDevelopmentPreviews) {
+                  void previewPrompt();
+                }
+              }}
+            >
               <input
                 aria-label="Ask about the selection"
                 className="w-full bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
                 placeholder="Ask about this…"
                 type="text"
+                value={customInstruction}
+                onChange={(event) => {
+                  setCustomInstruction(event.target.value);
+                  setPromptPreview(null);
+                  setPromptPreviewError(null);
+                  setIsPromptPreviewExpanded(false);
+                }}
               />
             </form>
+            {import.meta.env.DEV && (
+              <button
+                type="button"
+                aria-label={isDevModeEnabled ? "Turn development previews off" : "Turn development previews on"}
+                aria-pressed={isDevModeEnabled}
+                className={`absolute right-11 top-2 rounded-md px-2 py-1 text-[9px] font-bold transition-colors ${
+                  isDevModeEnabled
+                    ? "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100"
+                    : "text-zinc-600 hover:bg-zinc-800 hover:text-zinc-400"
+                }`}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={() => {
+                  const nextDevModeEnabled = !isDevModeEnabled;
+                  setIsDevModeEnabled(nextDevModeEnabled);
+
+                  if (!nextDevModeEnabled) {
+                    setIsSelectionExpanded(false);
+                    setPromptPreview(null);
+                    setPromptPreviewError(null);
+                    setIsPromptPreviewExpanded(false);
+                  }
+                }}
+              >
+                Dev {isDevModeEnabled ? "On" : "Off"}
+              </button>
+            )}
             <button
               type="button"
               aria-label="Close Snippet"
@@ -157,35 +283,90 @@ function App() {
           </header>
 
           <div className="mb-5 flex flex-wrap gap-2">
-            {['Summarize', 'Refine', 'Explain'].map((action) => (
+            {QUICK_ACTIONS.map((action) => (
               <button
                 key={action}
                 type="button"
                 className="cursor-pointer rounded-full bg-zinc-800 px-3 py-1.5 text-[10px] font-bold text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
+                onClick={() => {
+                  if (showDevelopmentPreviews) {
+                    void previewPrompt({ kind: "quick-action", action });
+                  }
+                }}
               >
-                {action}
+                {QUICK_ACTION_LABELS[action]}
               </button>
             ))}
           </div>
 
           {captureState === "captured" && selection && (
             <div>
-              <button
-                type="button"
-                aria-expanded={isSelectionExpanded}
-                className="flex cursor-pointer items-center gap-2 text-[11px] font-medium  text-zinc-500 transition-colors hover:text-zinc-300"
-                onClick={() => setIsSelectionExpanded((expanded) => !expanded)}
-              >
-                <span aria-hidden="true">{isSelectionExpanded ? "−" : "+"}</span>
-                Selected Text
-              </button>
-              {isSelectionExpanded && (
-                <blockquote
-                  className="selection-scroll mt-3 overflow-y-auto whitespace-pre-wrap text-sm leading-5 text-zinc-200"
-                  style={{ maxHeight: POPUP_MAX_HEIGHT - (160 + POPUP_SHADOW_MARGIN * 2) }}
-                >
-                  {selection.text}
-                </blockquote>
+              {showDevelopmentPreviews && (
+                <>
+                  <button
+                    type="button"
+                    aria-expanded={isSelectionExpanded}
+                    className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-300"
+                    onClick={() => setIsSelectionExpanded((expanded) => !expanded)}
+                  >
+                    <span aria-hidden="true">{isSelectionExpanded ? "−" : "+"}</span>
+                    Selected Text
+                  </button>
+                  {isSelectionExpanded && (
+                    <blockquote className="preview-scroll mt-3 max-h-44 overflow-y-auto whitespace-pre-wrap rounded-lg border border-zinc-800/80 bg-zinc-950/50 p-3 text-[10px] leading-4 text-zinc-400">
+                      {selection.text}
+                    </blockquote>
+                  )}
+
+                  <section className="mt-4">
+                    <button
+                      type="button"
+                      aria-expanded={isPromptPreviewExpanded}
+                      className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-300"
+                      onClick={() => {
+                        if (isPromptPreviewExpanded) {
+                          setIsPromptPreviewExpanded(false);
+                          return;
+                        }
+
+                        setIsPromptPreviewExpanded(true);
+                        if (!promptPreview && !promptPreviewError && !isPromptPreviewLoading) {
+                          void previewPrompt();
+                        }
+                      }}
+                    >
+                      <span aria-hidden="true">{isPromptPreviewExpanded ? "−" : "+"}</span>
+                      Prompt Preview
+                    </button>
+
+                    {isPromptPreviewExpanded && (
+                      <div className="mt-3">
+                        {isPromptPreviewLoading && (
+                          <p className="text-xs leading-5 text-zinc-500">Building prompt…</p>
+                        )}
+
+                        {promptPreviewError && (
+                          <p className="text-xs leading-5 text-zinc-500">{promptPreviewError}</p>
+                        )}
+
+                        {promptPreview && (
+                          <div className="preview-scroll max-h-44 space-y-3 overflow-y-auto rounded-lg border border-zinc-800/80 bg-zinc-950/50 p-3">
+                            {promptPreview.map((message) => (
+                              <div key={message.role}>
+                                <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-zinc-600">
+                                  {message.role}
+                                </p>
+                                <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-4 text-zinc-400">
+                                  {message.content}
+                                </pre>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                </>
               )}
             </div>
           )}

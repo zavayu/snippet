@@ -23,25 +23,25 @@ body {
   overflow: hidden;
 }
 
-.selection-scroll {
+.preview-scroll {
   scrollbar-color: rgb(113 113 122 / 55%) transparent;
   scrollbar-width: thin;
 }
 
-.selection-scroll::-webkit-scrollbar {
+.preview-scroll::-webkit-scrollbar {
   width: 6px;
 }
 
-.selection-scroll::-webkit-scrollbar-track {
+.preview-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.selection-scroll::-webkit-scrollbar-thumb {
+.preview-scroll::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgb(113 113 122 / 45%);
 }
 
-.selection-scroll::-webkit-scrollbar-thumb:hover {
+.preview-scroll::-webkit-scrollbar-thumb:hover {
   background: rgb(161 161 170 / 65%);
 }
 

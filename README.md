@@ -29,6 +29,19 @@ The Copy reader restores the prior clipboard value when it was plain text and th
 clipboard has not changed again. It intentionally does not promise restoration of
 all rich clipboard formats yet.
 
+The popup now collects either a custom instruction or a selected quick action
+(`Explain`, `Summarize`, or `Refine`). The Rust `PromptBuilder` converts that
+intent and the selection into provider-neutral chat messages, ready for the
+upcoming Ollama streaming integration.
+
+During development builds, the popup includes a **Preview generated prompt**
+control below the selected-text preview. It displays the exact system and user
+messages produced by `PromptBuilder`; it is omitted from release builds. The
+quick-action controls immediately preview their respective prompts during
+development, matching their eventual one-click generation behavior. Use the
+**Dev On/Off** control in the popup header to show or hide both previews; the
+setting persists locally between development sessions.
+
 ## MVP path
 
 1. Register a global shortcut.

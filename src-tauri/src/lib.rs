@@ -1,3 +1,4 @@
+pub mod prompt;
 mod selection;
 
 use std::{
@@ -17,6 +18,8 @@ use tauri::{PhysicalPosition, Runtime};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
+#[cfg(debug_assertions)]
+use crate::prompt::{ChatMessage, PromptBuilder, PromptRequest};
 use crate::selection::{CaptureError, CapturedSelection};
 
 const SELECTION_CAPTURED_EVENT: &str = "selection-captured";
@@ -32,13 +35,21 @@ struct CaptureFailure {
     message: String,
 }
 
+/// Development-only bridge for inspecting the provider-neutral messages before
+/// an Ollama provider is connected. This command is omitted from release builds.
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn preview_prompt(request: PromptRequest) -> Result<Vec<ChatMessage>, String> {
+    PromptBuilder::build(request).map_err(|error| error.user_message().into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let trigger_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
     let registered_shortcut =
         Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(CaptureState::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -61,7 +72,12 @@ pub fn run() {
                 })
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(debug_assertions)]
+    let builder = builder.invoke_handler(tauri::generate_handler![preview_prompt]);
+
+    builder
         .setup(move |app| {
             app.global_shortcut().register(registered_shortcut)?;
             Ok(())
