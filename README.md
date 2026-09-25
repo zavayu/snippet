@@ -11,6 +11,10 @@ It is made for the little questions that come up while you work: explain a
 passage, summarize a section, refine a sentence, or ask about the text in front
 of you without breaking your flow.
 
+<p align="center">
+  <img src="docs/assets/snippet-demo.gif" alt="Snippet explaining highlighted text in a Google Doc" width="800">
+</p>
+
 ## Features
 
 - **System-wide selection capture** — select text in a browser, editor, or other
