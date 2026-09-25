@@ -19,6 +19,7 @@ src-tauri/target
 .env
 .env.*
 !.env.example
+!.env.development
 
 # Editor directories and files
 .vscode/*
