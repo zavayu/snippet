@@ -1,17 +1,73 @@
 //! Persisted local-inference settings.
 
 use std::{
+    collections::HashSet,
     env, fs,
     path::PathBuf,
+    str::FromStr,
     sync::{Mutex, MutexGuard},
 };
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_global_shortcut::Shortcut;
 
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MODEL_OVERRIDE_ENV: &str = "SNIPPET_OLLAMA_MODEL";
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutConfig {
+    pub open_popup: String,
+    pub summarize: String,
+    pub explain: String,
+    pub refine: String,
+}
+
+impl Default for ShortcutConfig {
+    fn default() -> Self {
+        Self {
+            open_popup: "Ctrl+Shift+Space".into(),
+            summarize: "Ctrl+Shift+S".into(),
+            explain: "Ctrl+Shift+E".into(),
+            refine: "Ctrl+Shift+R".into(),
+        }
+    }
+}
+
+impl ShortcutConfig {
+    pub fn bindings(&self) -> [(&str, &str); 4] {
+        [
+            ("Open popup", &self.open_popup),
+            ("Summarize", &self.summarize),
+            ("Explain", &self.explain),
+            ("Refine", &self.refine),
+        ]
+    }
+
+    pub(crate) fn normalized(mut self) -> Result<Self, SettingsError> {
+        let mut ids = HashSet::new();
+        for (name, value) in [
+            ("Open popup", &mut self.open_popup),
+            ("Summarize", &mut self.summarize),
+            ("Explain", &mut self.explain),
+            ("Refine", &mut self.refine),
+        ] {
+            *value = value.trim().to_owned();
+            if value.is_empty() {
+                continue;
+            }
+
+            let shortcut = Shortcut::from_str(value)
+                .map_err(|_| SettingsError::InvalidShortcut(name.to_owned()))?;
+            if !ids.insert(shortcut.id()) {
+                return Err(SettingsError::DuplicateShortcut);
+            }
+        }
+        Ok(self)
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +76,8 @@ pub struct AppConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub thinking: bool,
+    #[serde(default)]
+    pub shortcuts: ShortcutConfig,
 }
 
 impl Default for AppConfig {
@@ -28,12 +86,13 @@ impl Default for AppConfig {
             ollama_base_url: DEFAULT_OLLAMA_BASE_URL.into(),
             model: None,
             thinking: false,
+            shortcuts: ShortcutConfig::default(),
         }
     }
 }
 
 impl AppConfig {
-    fn normalized(mut self) -> Result<Self, SettingsError> {
+    pub(crate) fn normalized(mut self) -> Result<Self, SettingsError> {
         let base_url = self.ollama_base_url.trim().trim_end_matches('/').to_owned();
         if base_url.is_empty() {
             return Err(SettingsError::InvalidBaseUrl);
@@ -48,6 +107,7 @@ impl AppConfig {
         self.model = self
             .model
             .and_then(|model| (!model.trim().is_empty()).then(|| model.trim().to_owned()));
+        self.shortcuts = self.shortcuts.normalized()?;
         Ok(self)
     }
 }
@@ -150,6 +210,8 @@ fn snapshot_for(config: AppConfig) -> SettingsSnapshot {
 #[derive(Debug)]
 pub enum SettingsError {
     InvalidBaseUrl,
+    InvalidShortcut(String),
+    DuplicateShortcut,
     Read(String),
     Write(String),
 }
@@ -158,6 +220,10 @@ impl SettingsError {
     pub fn user_message(&self) -> String {
         match self {
             Self::InvalidBaseUrl => "Enter a valid http:// or https:// Ollama address.".into(),
+            Self::InvalidShortcut(action) => format!(
+                "{action} needs a shortcut such as Ctrl+Shift+S, or leave it blank to disable it."
+            ),
+            Self::DuplicateShortcut => "Each shortcut needs a different key combination.".into(),
             Self::Read(error) => format!("Snippet could not read its saved settings: {error}"),
             Self::Write(error) => format!("Snippet could not save your settings: {error}"),
         }
@@ -166,7 +232,10 @@ impl SettingsError {
 
 #[cfg(test)]
 mod tests {
-    use super::{snapshot_for, AppConfig, ModelSource, SettingsError, DEFAULT_OLLAMA_BASE_URL};
+    use super::{
+        snapshot_for, AppConfig, ModelSource, SettingsError, ShortcutConfig,
+        DEFAULT_OLLAMA_BASE_URL,
+    };
 
     #[test]
     fn defaults_to_the_local_ollama_server() {
@@ -182,6 +251,7 @@ mod tests {
             ollama_base_url: " http://localhost:11434/ ".into(),
             model: Some(" qwen3:8b ".into()),
             thinking: true,
+            shortcuts: ShortcutConfig::default(),
         }
         .normalized()
         .unwrap();
@@ -197,11 +267,39 @@ mod tests {
             ollama_base_url: "not-a-url".into(),
             model: None,
             thinking: false,
+            shortcuts: ShortcutConfig::default(),
         }
         .normalized()
         .unwrap_err();
 
         assert!(matches!(error, SettingsError::InvalidBaseUrl));
+    }
+
+    #[test]
+    fn provides_the_default_shortcuts() {
+        assert_eq!(ShortcutConfig::default().open_popup, "Ctrl+Shift+Space");
+        assert_eq!(ShortcutConfig::default().summarize, "Ctrl+Shift+S");
+        assert_eq!(ShortcutConfig::default().explain, "Ctrl+Shift+E");
+        assert_eq!(ShortcutConfig::default().refine, "Ctrl+Shift+R");
+    }
+
+    #[test]
+    fn rejects_invalid_or_duplicate_shortcuts() {
+        let invalid = ShortcutConfig {
+            summarize: "not a shortcut".into(),
+            ..ShortcutConfig::default()
+        }
+        .normalized()
+        .unwrap_err();
+        assert!(matches!(invalid, SettingsError::InvalidShortcut(_)));
+
+        let duplicate = ShortcutConfig {
+            explain: "Ctrl+Shift+S".into(),
+            ..ShortcutConfig::default()
+        }
+        .normalized()
+        .unwrap_err();
+        assert!(matches!(duplicate, SettingsError::DuplicateShortcut));
     }
 
     #[test]

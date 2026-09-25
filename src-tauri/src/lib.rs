@@ -5,6 +5,7 @@ mod settings;
 
 use std::{
     io,
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -12,9 +13,10 @@ use std::{
     thread,
 };
 
+use arboard::Clipboard;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -26,13 +28,13 @@ use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPo
 #[cfg(debug_assertions)]
 use crate::prompt::ChatMessage;
 use crate::{
-    prompt::{PromptBuilder, PromptRequest},
+    prompt::{PromptBuilder, PromptRequest, QuickAction},
     provider::{
         ollama::OllamaProvider, GenerationEvent, GenerationRequest, LlmProvider, ModelInfo,
         ProviderError,
     },
     selection::{CaptureError, CapturedSelection},
-    settings::{AppConfig, SettingsSnapshot, SettingsStore},
+    settings::{AppConfig, SettingsSnapshot, SettingsStore, ShortcutConfig},
 };
 
 const SELECTION_CAPTURED_EVENT: &str = "selection-captured";
@@ -50,6 +52,31 @@ const POPUP_WINDOW_OFFSET_Y: i32 = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 
 #[derive(Default)]
 struct CaptureState(Arc<AtomicBool>);
+
+#[derive(Clone, Copy)]
+enum ShortcutAction {
+    OpenPopup,
+    QuickAction(QuickAction),
+}
+
+#[derive(Default)]
+struct ShortcutBindings(Mutex<Vec<(Shortcut, ShortcutAction)>>);
+
+impl ShortcutBindings {
+    fn action_for(&self, shortcut: &Shortcut) -> Option<ShortcutAction> {
+        self.0
+            .lock()
+            .ok()?
+            .iter()
+            .find_map(|(registered, action)| (registered == shortcut).then_some(*action))
+    }
+
+    fn replace(&self, bindings: Vec<(Shortcut, ShortcutAction)>) {
+        if let Ok(mut current) = self.0.lock() {
+            *current = bindings;
+        }
+    }
+}
 
 #[derive(Default, Clone)]
 struct GenerationState(Arc<GenerationStateInner>);
@@ -123,6 +150,13 @@ struct CaptureFailure {
     message: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectionCaptureEvent {
+    selection: CapturedSelection,
+    action: Option<QuickAction>,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateForSelectionRequest {
@@ -191,6 +225,7 @@ macro_rules! snippet_command_handler {
             get_provider_status,
             generate_for_selection,
             cancel_generation,
+            copy_response,
             preview_prompt,
         ]
     };
@@ -205,6 +240,7 @@ macro_rules! snippet_command_handler {
             get_provider_status,
             generate_for_selection,
             cancel_generation,
+            copy_response,
         ]
     };
 }
@@ -216,12 +252,22 @@ fn get_settings(settings: State<SettingsStore>) -> Result<SettingsSnapshot, Stri
 
 #[tauri::command]
 fn save_settings(
+    app: AppHandle,
     settings: State<SettingsStore>,
+    shortcut_bindings: State<ShortcutBindings>,
     config: AppConfig,
 ) -> Result<SettingsSnapshot, String> {
-    settings
-        .update(config)
-        .map_err(|error| error.user_message())
+    let previous = settings.snapshot().map_err(|error| error.user_message())?;
+    let config = config.normalized().map_err(|error| error.user_message())?;
+
+    apply_shortcuts(&app, &shortcut_bindings, &config.shortcuts)?;
+    match settings.update(config) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => {
+            let _ = apply_shortcuts(&app, &shortcut_bindings, &previous.config.shortcuts);
+            Err(error.user_message())
+        }
+    }
 }
 
 #[tauri::command]
@@ -340,33 +386,40 @@ fn cancel_generation(generation_state: State<GenerationState>) {
     generation_state.cancel();
 }
 
+#[tauri::command]
+fn copy_response(text: String) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("There is no response to copy yet.".into());
+    }
+
+    let mut clipboard = Clipboard::new().map_err(|_| {
+        "Snippet could not access the clipboard. Another application may be using it.".to_owned()
+    })?;
+    clipboard
+        .set_text(text)
+        .map_err(|_| "Snippet could not copy the response. Try again.".to_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let trigger_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
-    let registered_shortcut =
-        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
-
     let builder = tauri::Builder::default()
         .manage(CaptureState::default())
         .manage(GenerationState::default())
+        .manage(ShortcutBindings::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut != &trigger_shortcut || event.state() != ShortcutState::Released {
+                    if event.state() != ShortcutState::Released {
                         return;
                     }
 
-                    let state = app.state::<CaptureState>().0.clone();
-                    if state.swap(true, Ordering::AcqRel) {
+                    let Some(action) = app
+                        .try_state::<ShortcutBindings>()
+                        .and_then(|bindings| bindings.action_for(shortcut))
+                    else {
                         return;
-                    }
-
-                    let app_handle = app.clone();
-                    thread::spawn(move || {
-                        let capture_result = selection::capture_default_selection();
-                        publish_capture_result(&app_handle, capture_result);
-                        state.store(false, Ordering::Release);
-                    });
+                    };
+                    start_capture(app, action);
                 })
                 .build(),
         )
@@ -377,17 +430,85 @@ pub fn run() {
         .setup(move |app| {
             let settings = SettingsStore::load(&app.handle())
                 .map_err(|error| io::Error::other(error.user_message()))?;
+            let shortcut_config = settings
+                .snapshot()
+                .map_err(|error| io::Error::other(error.user_message()))?
+                .config
+                .shortcuts;
             app.manage(settings);
-            app.global_shortcut().register(registered_shortcut)?;
+            let bindings = app.state::<ShortcutBindings>();
+            apply_shortcuts(&app.handle(), &bindings, &shortcut_config)
+                .map_err(io::Error::other)?;
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
+fn start_capture(app: &AppHandle, action: ShortcutAction) {
+    let state = app.state::<CaptureState>().0.clone();
+    if state.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    let app_handle = app.clone();
+    thread::spawn(move || {
+        let capture_result = selection::capture_default_selection();
+        publish_capture_result(&app_handle, capture_result, action);
+        state.store(false, Ordering::Release);
+    });
+}
+
+fn apply_shortcuts(
+    app: &AppHandle,
+    bindings: &ShortcutBindings,
+    config: &ShortcutConfig,
+) -> Result<(), String> {
+    let actions = [
+        ShortcutAction::OpenPopup,
+        ShortcutAction::QuickAction(QuickAction::Summarize),
+        ShortcutAction::QuickAction(QuickAction::Explain),
+        ShortcutAction::QuickAction(QuickAction::Refine),
+    ];
+    let parsed = config
+        .bindings()
+        .into_iter()
+        .zip(actions)
+        .filter_map(|((name, value), action)| {
+            (!value.is_empty())
+                .then(|| Shortcut::from_str(value).map(|shortcut| (name, shortcut, action)))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "One of the configured shortcuts is invalid.".to_owned())?;
+
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| format!("Snippet could not update its shortcuts: {error}"))?;
+
+    let shortcuts = parsed
+        .iter()
+        .map(|(_, shortcut, _)| *shortcut)
+        .collect::<Vec<_>>();
+    if let Err(error) = app.global_shortcut().register_multiple(shortcuts) {
+        bindings.replace(Vec::new());
+        return Err(format!(
+            "Snippet could not register the requested shortcut. Another application may already use it: {error}"
+        ));
+    }
+
+    bindings.replace(
+        parsed
+            .into_iter()
+            .map(|(_, shortcut, action)| (shortcut, action))
+            .collect(),
+    );
+    Ok(())
+}
+
 fn publish_capture_result(
     app: &AppHandle,
     capture_result: Result<CapturedSelection, CaptureError>,
+    action: ShortcutAction,
 ) {
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
@@ -400,7 +521,14 @@ fn publish_capture_result(
 
     match capture_result {
         Ok(selection) => {
-            let _ = app.emit(SELECTION_CAPTURED_EVENT, selection);
+            let action = match action {
+                ShortcutAction::OpenPopup => None,
+                ShortcutAction::QuickAction(action) => Some(action),
+            };
+            let _ = app.emit(
+                SELECTION_CAPTURED_EVENT,
+                SelectionCaptureEvent { selection, action },
+            );
         }
         Err(error) => {
             let _ = app.emit(

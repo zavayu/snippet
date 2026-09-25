@@ -41,6 +41,18 @@ type CapturedSelection = {
   clipboardRestored: boolean;
 };
 
+type ShortcutConfig = {
+  openPopup: string;
+  summarize: string;
+  explain: string;
+  refine: string;
+};
+
+type SelectionCaptureEvent = {
+  selection: CapturedSelection;
+  action: QuickAction | null;
+};
+
 type CaptureFailure = {
   message: string;
 };
@@ -58,6 +70,7 @@ type AppConfig = {
   ollamaBaseUrl: string;
   model: string | null;
   thinking: boolean;
+  shortcuts: ShortcutConfig;
 };
 
 type SettingsSnapshot = {
@@ -106,6 +119,7 @@ function App() {
   const [generationState, setGenerationState] = useState<GenerationState>("idle");
   const [responseText, setResponseText] = useState("");
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
@@ -123,6 +137,7 @@ function App() {
   const activeGenerationRef = useRef<number | null>(null);
   const lastIntentRef = useRef<PromptIntent | null>(null);
   const responseTextRef = useRef("");
+  const copyResetTimeoutRef = useRef<number | null>(null);
 
   const showDevelopmentPreviews = SHOW_DEVELOPMENT_TOOLS;
   const isGenerating = generationState === "loading" || generationState === "streaming";
@@ -165,26 +180,40 @@ function App() {
     void loadSettings();
   }, []);
 
+  useEffect(() => () => {
+    if (copyResetTimeoutRef.current !== null) {
+      window.clearTimeout(copyResetTimeoutRef.current);
+    }
+  }, []);
+
   useEffect(() => {
     const unlisten = Promise.all([
-      listen<CapturedSelection>("selection-captured", (event) => {
+      listen<SelectionCaptureEvent>("selection-captured", (event) => {
+        const capturedSelection = event.payload.selection;
         setIsPopupSurfaceVisible(false);
         window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
         void invoke("cancel_generation");
         activeGenerationRef.current = null;
         lastIntentRef.current = null;
-        setSelection(event.payload);
+        setSelection(capturedSelection);
         setErrorMessage(null);
         setCustomInstruction("");
         setGenerationState("idle");
         responseTextRef.current = "";
         setResponseText("");
         setGenerationError(null);
+        setCopyState("idle");
         setIsSelectionExpanded(false);
         setPromptPreview(null);
         setPromptPreviewError(null);
         setIsPromptPreviewExpanded(false);
         setCaptureState("captured");
+        if (event.payload.action) {
+          void startGeneration(
+            { kind: "quick-action", action: event.payload.action },
+            capturedSelection,
+          );
+        }
       }),
       listen<CaptureFailure>("selection-capture-failed", (event) => {
         setIsPopupSurfaceVisible(false);
@@ -199,6 +228,7 @@ function App() {
         responseTextRef.current = "";
         setResponseText("");
         setGenerationError(null);
+        setCopyState("idle");
       }),
       listen<GenerationChunk>("generation-chunk", (event) => {
         if (activeGenerationRef.current !== event.payload.requestId) {
@@ -330,8 +360,12 @@ function App() {
     return lastIntentRef.current ?? { kind: "quick-action", action: "explain" };
   };
 
-  const startGeneration = async (intentOverride?: PromptIntent) => {
-    if (!selection) {
+  const startGeneration = async (
+    intentOverride?: PromptIntent,
+    selectionOverride?: CapturedSelection,
+  ) => {
+    const activeSelection = selectionOverride ?? selection;
+    if (!activeSelection) {
       return;
     }
 
@@ -342,11 +376,12 @@ function App() {
     responseTextRef.current = "";
     setResponseText("");
     setGenerationError(null);
+    setCopyState("idle");
 
     try {
       const started = await invoke<GenerationStarted>("generate_for_selection", {
         request: {
-          selectedText: selection.text,
+          selectedText: activeSelection.text,
           intent,
         },
       });
@@ -404,6 +439,26 @@ function App() {
     setIsPopupSurfaceVisible(false);
     void invoke("cancel_generation");
     void getCurrentWindow().hide();
+  };
+
+  const copyResponse = async () => {
+    if (!responseText) {
+      return;
+    }
+
+    try {
+      await invoke("copy_response", { text: responseText });
+      setCopyState("copied");
+      if (copyResetTimeoutRef.current !== null) {
+        window.clearTimeout(copyResetTimeoutRef.current);
+      }
+      copyResetTimeoutRef.current = window.setTimeout(() => {
+        setCopyState("idle");
+        copyResetTimeoutRef.current = null;
+      }, 2500);
+    } catch {
+      setCopyState("error");
+    }
   };
 
   const configuredModelIsListed = settingsDraft?.model
@@ -595,6 +650,37 @@ function App() {
                 />
               </label>
 
+              <div className="mt-4">
+                <p className="text-xs font-medium text-zinc-200">Shortcuts</p>
+                <p className="mt-0.5 text-[10px] leading-4 text-zinc-500">
+                  Use combinations such as Ctrl+Shift+S. Leave one blank to disable it.
+                </p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {([
+                    ["openPopup", "Open popup"],
+                    ["summarize", "Summarize"],
+                    ["explain", "Explain"],
+                    ["refine", "Refine"],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="text-[10px] font-medium text-zinc-500">
+                      {label}
+                      <input
+                        className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-600"
+                        placeholder="Disabled"
+                        value={settingsDraft?.shortcuts[key] ?? ""}
+                        onChange={(event) => setSettingsDraft((draft) => draft && ({
+                          ...draft,
+                          shortcuts: {
+                            ...draft.shortcuts,
+                            [key]: event.target.value,
+                          },
+                        }))}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+
               {settings?.modelSource === "environment" && (
                 <p className="mt-2 text-[10px] leading-4 text-zinc-500">
                   `SNIPPET_OLLAMA_MODEL` is overriding the saved model for this development session.
@@ -627,10 +713,30 @@ function App() {
           )}
 
           {!isSettingsOpen && hasSubmittedPrompt && (
-            <section className="mb-5">
+            <section className="mb-2">
               {responseText && (
                 <div className="response-scroll max-h-80 overflow-y-auto text-sm leading-5 text-zinc-200">
                   <MarkdownResponse content={responseText} />
+                  {generationState === "complete" && (
+                    <button
+                      type="button"
+                      aria-label={copyState === "copied" ? "Copied response" : "Copy response"}
+                      title={copyState === "copied" ? "Copied" : "Copy response"}
+                      className="mt-1 inline-flex cursor-pointer items-center rounded-md p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                      onClick={() => void copyResponse()}
+                    >
+                      {copyState === "copied" ? (
+                        <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 fill-none stroke-current stroke-[2]">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4.5 4.5L19 7" />
+                        </svg>
+                      ) : (
+                        <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 fill-none stroke-current stroke-[1.8]">
+                          <rect x="8" y="8" width="11" height="11" rx="2" />
+                          <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                        </svg>
+                      )}
+                    </button>
+                  )}
                 </div>
               )}
               {generationError && <p className="text-xs leading-5 text-amber-200">{generationError}</p>}
