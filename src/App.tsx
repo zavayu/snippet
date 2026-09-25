@@ -9,12 +9,18 @@ import {
   PhysicalPosition,
 } from "@tauri-apps/api/window";
 import "./App.css";
+import { MarkdownResponse } from "./components/MarkdownResponse";
 import { SHOW_DEVELOPMENT_TOOLS } from "./config";
 
 const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
 const POPUP_MAX_HEIGHT = 720;
 const POPUP_SHADOW_MARGIN = 24;
+const POPUP_CONTENT_INSET = 24;
+const POPUP_CURSOR_GAP_X = 8;
+const POPUP_CURSOR_GAP_Y = 10;
+const POPUP_WINDOW_OFFSET_X = POPUP_CURSOR_GAP_X - POPUP_CONTENT_INSET;
+const POPUP_WINDOW_OFFSET_Y = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 
 type CaptureState = "waiting" | "captured" | "error";
 type GenerationState = "idle" | "loading" | "streaming" | "complete" | "error";
@@ -111,6 +117,7 @@ function App() {
   const [promptPreviewError, setPromptPreviewError] = useState<string | null>(null);
   const [isPromptPreviewLoading, setIsPromptPreviewLoading] = useState(false);
   const [isPromptPreviewExpanded, setIsPromptPreviewExpanded] = useState(false);
+  const [isPopupSurfaceVisible, setIsPopupSurfaceVisible] = useState(false);
   const popupContentRef = useRef<HTMLDivElement>(null);
   const lastPositionedSelectionRef = useRef<CapturedSelection | null>(null);
   const activeGenerationRef = useRef<number | null>(null);
@@ -161,6 +168,8 @@ function App() {
   useEffect(() => {
     const unlisten = Promise.all([
       listen<CapturedSelection>("selection-captured", (event) => {
+        setIsPopupSurfaceVisible(false);
+        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
         void invoke("cancel_generation");
         activeGenerationRef.current = null;
         lastIntentRef.current = null;
@@ -178,6 +187,8 @@ function App() {
         setCaptureState("captured");
       }),
       listen<CaptureFailure>("selection-capture-failed", (event) => {
+        setIsPopupSurfaceVisible(false);
+        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
         setSelection(null);
         setErrorMessage(event.payload.message);
         setCaptureState("error");
@@ -226,6 +237,7 @@ function App() {
 
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        setIsPopupSurfaceVisible(false);
         void invoke("cancel_generation");
         void getCurrentWindow().hide();
       }
@@ -274,10 +286,10 @@ function App() {
         const minY = workArea.position.y;
         const maxX = Math.max(minX, workArea.position.x + workArea.size.width - popupSize.width);
         const maxY = Math.max(minY, workArea.position.y + workArea.size.height - popupSize.height);
-        const x = Math.min(Math.max(cursor.x + 14, minX), maxX);
-        const y = cursor.y + 18 <= maxY
-          ? cursor.y + 18
-          : Math.max(minY, cursor.y - 18 - popupSize.height);
+        const x = Math.min(Math.max(cursor.x + POPUP_WINDOW_OFFSET_X, minX), maxX);
+        const y = cursor.y + POPUP_WINDOW_OFFSET_Y <= maxY
+          ? cursor.y + POPUP_WINDOW_OFFSET_Y
+          : Math.max(minY, cursor.y - POPUP_WINDOW_OFFSET_Y - popupSize.height);
 
         await popupWindow.setPosition(new PhysicalPosition(x, y));
       })().catch(() => undefined);
@@ -389,6 +401,7 @@ function App() {
   };
 
   const closePopup = () => {
+    setIsPopupSurfaceVisible(false);
     void invoke("cancel_generation");
     void getCurrentWindow().hide();
   };
@@ -399,7 +412,10 @@ function App() {
   return (
     <main className="min-h-screen overflow-hidden p-6 text-zinc-100">
       <section className="mx-auto w-full max-w-xl">
-        <div ref={popupContentRef} className="rounded-[28px] bg-zinc-900 p-4 shadow-lg shadow-black/50">
+        <div
+          ref={popupContentRef}
+          className={`popup-surface ${isPopupSurfaceVisible ? "popup-surface--enter" : "popup-surface--hidden"} rounded-[28px] bg-zinc-900 p-4 shadow-lg shadow-black/50`}
+        >
           <header
             className="relative -mx-4 -mt-4 mb-3 flex cursor-grab select-none items-center gap-3 pl-4 pr-24 pt-4 active:cursor-grabbing"
             onMouseDown={(event) => {
@@ -413,7 +429,12 @@ function App() {
                 S
               </div>
             </div>
-            {!hasSubmittedPrompt && (
+            {isSettingsOpen && (
+              <span data-tauri-drag-region className="min-w-0 flex-1 px-1 py-2 text-[17px] text-zinc-100">
+                Settings
+              </span>
+            )}
+            {!isSettingsOpen && !hasSubmittedPrompt && (
               <form
                 className="min-w-0 flex-1"
                 onMouseDown={(event) => event.stopPropagation()}
@@ -438,7 +459,7 @@ function App() {
                 />
               </form>
             )}
-            {hasSubmittedPrompt && isGenerating && (
+            {!isSettingsOpen && hasSubmittedPrompt && isGenerating && (
               <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-2">
                 <svg
                   aria-hidden="true"
@@ -455,19 +476,29 @@ function App() {
             )}
             <button
               type="button"
-              aria-label="Open local AI settings"
-              title="Settings"
+              aria-label={isSettingsOpen ? "Close settings" : "Open local AI settings"}
+              title={isSettingsOpen ? "Back" : "Settings"}
               className="absolute right-11 top-4 grid size-8 cursor-pointer place-items-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
               onMouseDown={(event) => event.stopPropagation()}
               onClick={() => {
-                setIsSettingsOpen((open) => !open);
-                void refreshProviderStatus();
+                if (isSettingsOpen) {
+                  setIsSettingsOpen(false);
+                } else {
+                  setIsSettingsOpen(true);
+                  void refreshProviderStatus();
+                }
               }}
             >
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 fill-none stroke-current stroke-[1.8]">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10.3 3.6a1.9 1.9 0 0 1 3.4 0l.4 1a1.9 1.9 0 0 0 2 1.1l1.1-.2a1.9 1.9 0 0 1 2.4 2.4l-.2 1.1a1.9 1.9 0 0 0 1.1 2l1 .4a1.9 1.9 0 0 1 0 3.4l-1 .4a1.9 1.9 0 0 0-1.1 2l.2 1.1a1.9 1.9 0 0 1-2.4 2.4l-1.1-.2a1.9 1.9 0 0 0-2 1.1l-.4 1a1.9 1.9 0 0 1-3.4 0l-.4-1a1.9 1.9 0 0 0-2-1.1l-1.1.2a1.9 1.9 0 0 1-2.4-2.4l.2-1.1a1.9 1.9 0 0 0-1.1-2l-1-.4a1.9 1.9 0 0 1 0-3.4l1-.4a1.9 1.9 0 0 0 1.1-2l-.2-1.1a1.9 1.9 0 0 1 2.4-2.4l1.1.2a1.9 1.9 0 0 0 2-1.1l.4-1Z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
+              {isSettingsOpen ? (
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5 fill-none stroke-current stroke-[1.8]">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m14.5 5-7 7 7 7" />
+                </svg>
+              ) : (
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 fill-none stroke-current stroke-[1.8]">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.3 3.6a1.9 1.9 0 0 1 3.4 0l.4 1a1.9 1.9 0 0 0 2 1.1l1.1-.2a1.9 1.9 0 0 1 2.4 2.4l-.2 1.1a1.9 1.9 0 0 0 1.1 2l1 .4a1.9 1.9 0 0 1 0 3.4l-1 .4a1.9 1.9 0 0 0-1.1 2l.2 1.1a1.9 1.9 0 0 1-2.4 2.4l-1.1-.2a1.9 1.9 0 0 0-2 1.1l-.4 1a1.9 1.9 0 0 1-3.4 0l-.4-1a1.9 1.9 0 0 0-2-1.1l-1.1.2a1.9 1.9 0 0 1-2.4-2.4l.2-1.1a1.9 1.9 0 0 0-1.1-2l-1-.4a1.9 1.9 0 0 1 0-3.4l1-.4a1.9 1.9 0 0 0 1.1-2l-.2-1.1a1.9 1.9 0 0 1 2.4-2.4l1.1.2a1.9 1.9 0 0 0 2-1.1l.4-1Z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              )}
             </button>
             <button
               type="button"
@@ -476,12 +507,14 @@ function App() {
               onMouseDown={(event) => event.stopPropagation()}
               onClick={closePopup}
             >
-              <span aria-hidden="true" className="text-xl font-light leading-none">×</span>
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5 fill-none stroke-current stroke-[1.8]">
+                <path strokeLinecap="round" d="m7 7 10 10M17 7 7 17" />
+              </svg>
             </button>
           </header>
 
-          {!hasSubmittedPrompt && (
-            <div className="mb-5 flex flex-wrap gap-2">
+          {!isSettingsOpen && !hasSubmittedPrompt && (
+            <div className="flex flex-wrap gap-2">
               {QUICK_ACTIONS.map((action) => (
                 <button
                   key={action}
@@ -496,7 +529,7 @@ function App() {
           )}
 
           {isSettingsOpen && (
-            <section className="mb-5 rounded-xl border border-zinc-800 bg-zinc-950/45 p-3">
+            <section className="min-h-64 px-1 pt-1">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold text-zinc-200">Local AI</p>
@@ -593,18 +626,18 @@ function App() {
             </section>
           )}
 
-          {hasSubmittedPrompt && (
+          {!isSettingsOpen && hasSubmittedPrompt && (
             <section className="mb-5">
               {responseText && (
-                <div className="response-scroll max-h-80 overflow-y-auto whitespace-pre-wrap text-sm leading-5 text-zinc-200">
-                  {responseText}
+                <div className="response-scroll max-h-80 overflow-y-auto text-sm leading-5 text-zinc-200">
+                  <MarkdownResponse content={responseText} />
                 </div>
               )}
               {generationError && <p className="text-xs leading-5 text-amber-200">{generationError}</p>}
             </section>
           )}
 
-          {captureState === "captured" && selection && showDevelopmentPreviews && (
+          {!isSettingsOpen && captureState === "captured" && selection && showDevelopmentPreviews && (
             <div>
               <button
                 type="button"
@@ -662,7 +695,7 @@ function App() {
             </div>
           )}
 
-          {captureState === "error" && (
+          {!isSettingsOpen && captureState === "error" && (
             <p className="mt-3 text-xs leading-5 text-amber-200">{errorMessage}</p>
           )}
         </div>

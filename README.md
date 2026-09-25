@@ -17,6 +17,8 @@ of you without breaking your flow.
   desktop application and press `Ctrl + Shift + Space`.
 - **Local Ollama inference** — send prompts to a model running on your machine.
 - **Streaming responses** — see the answer as it is generated.
+- **Markdown answers** — read headings, lists, tables, links, and code in a
+  compact, desktop-native format.
 - **Quick actions and custom prompts** — explain, summarize, refine, or provide
   your own instruction.
 - **Persistent local settings** — configure the Ollama address and selected model

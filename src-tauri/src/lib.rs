@@ -42,8 +42,11 @@ const GENERATION_CHUNK_EVENT: &str = "generation-chunk";
 const GENERATION_FINISHED_EVENT: &str = "generation-finished";
 const GENERATION_FAILED_EVENT: &str = "generation-failed";
 const GENERATION_CANCELLED_EVENT: &str = "generation-cancelled";
-const POPUP_CURSOR_OFFSET_X: i32 = 14;
-const POPUP_CURSOR_OFFSET_Y: i32 = 18;
+const POPUP_CONTENT_INSET: i32 = 24;
+const POPUP_CURSOR_GAP_X: i32 = 8;
+const POPUP_CURSOR_GAP_Y: i32 = 10;
+const POPUP_WINDOW_OFFSET_X: i32 = POPUP_CURSOR_GAP_X - POPUP_CONTENT_INSET;
+const POPUP_WINDOW_OFFSET_Y: i32 = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 
 #[derive(Default)]
 struct CaptureState(Arc<AtomicBool>);
@@ -417,8 +420,8 @@ fn position_popup_near_cursor<R: Runtime>(window: &tauri::WebviewWindow<R>) {
         return;
     }
 
-    let mut x = cursor.x + POPUP_CURSOR_OFFSET_X;
-    let mut y = cursor.y + POPUP_CURSOR_OFFSET_Y;
+    let mut x = cursor.x + POPUP_WINDOW_OFFSET_X;
+    let mut y = cursor.y + POPUP_WINDOW_OFFSET_Y;
 
     if let (Ok(Some(monitor)), Ok(size)) = (
         window.monitor_from_point(cursor.x as f64, cursor.y as f64),
