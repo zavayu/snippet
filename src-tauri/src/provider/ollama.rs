@@ -80,6 +80,7 @@ impl LlmProvider for OllamaProvider {
             model: request.model,
             messages: request.messages,
             stream: true,
+            think: request.thinking,
         };
         let response = self
             .client
@@ -168,6 +169,7 @@ struct OllamaChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    think: bool,
 }
 
 #[derive(Deserialize)]
@@ -188,7 +190,24 @@ struct OllamaAssistantMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::OllamaChatChunk;
+    use super::{OllamaChatChunk, OllamaChatRequest};
+    use crate::prompt::{ChatMessage, ChatRole};
+
+    #[test]
+    fn serializes_the_thinking_preference() {
+        let request = OllamaChatRequest {
+            model: "qwen3:8b".into(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: "Explain this".into(),
+            }],
+            stream: true,
+            think: false,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["think"], false);
+    }
 
     #[test]
     fn parses_a_streaming_text_chunk() {

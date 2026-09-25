@@ -15,6 +15,7 @@ use crate::prompt::ChatMessage;
 pub struct GenerationRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
+    pub thinking: bool,
 }
 
 #[derive(Debug, Clone)]

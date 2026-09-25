@@ -51,6 +51,7 @@ type ChatMessage = {
 type AppConfig = {
   ollamaBaseUrl: string;
   model: string | null;
+  thinking: boolean;
 };
 
 type SettingsSnapshot = {
@@ -540,6 +541,25 @@ function App() {
                     <option key={model.name} value={model.name}>{model.name}</option>
                   ))}
                 </select>
+              </label>
+
+              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
+                <span>
+                  <span className="block text-xs font-medium text-zinc-200">Enable thinking</span>
+                  <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+                    Slower, more deliberate replies when supported by the model.
+                  </span>
+                </span>
+                <input
+                  aria-label="Enable thinking"
+                  className="size-3.5 cursor-pointer accent-zinc-100"
+                  type="checkbox"
+                  checked={settingsDraft?.thinking ?? false}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({
+                    ...draft,
+                    thinking: event.target.checked,
+                  }))}
+                />
               </label>
 
               {settings?.modelSource === "environment" && (

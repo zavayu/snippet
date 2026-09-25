@@ -86,12 +86,14 @@ The file contains the Ollama address and selected model:
 ```json
 {
   "ollamaBaseUrl": "http://localhost:11434",
-  "model": "your-model-name"
+  "model": "your-model-name",
+  "thinking": false
 }
 ```
 
 For development, `SNIPPET_OLLAMA_MODEL` overrides the saved model name without
-changing the settings file.
+changing the settings file. Thinking is disabled by default for faster replies;
+enable it in Settings when you prefer more deliberate model responses.
 
 ### Development tools
 

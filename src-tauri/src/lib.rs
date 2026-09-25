@@ -272,7 +272,11 @@ fn generate_for_selection(
         let provider_task = tauri::async_runtime::spawn(async move {
             provider
                 .stream_generation(
-                    GenerationRequest { model, messages },
+                    GenerationRequest {
+                        model,
+                        messages,
+                        thinking: snapshot.config.thinking,
+                    },
                     cancellation,
                     event_sender,
                 )

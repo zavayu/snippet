@@ -18,6 +18,8 @@ const MODEL_OVERRIDE_ENV: &str = "SNIPPET_OLLAMA_MODEL";
 pub struct AppConfig {
     pub ollama_base_url: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub thinking: bool,
 }
 
 impl Default for AppConfig {
@@ -25,6 +27,7 @@ impl Default for AppConfig {
         Self {
             ollama_base_url: DEFAULT_OLLAMA_BASE_URL.into(),
             model: None,
+            thinking: false,
         }
     }
 }
@@ -170,6 +173,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
         assert_eq!(config.model, None);
+        assert!(!config.thinking);
     }
 
     #[test]
@@ -177,12 +181,14 @@ mod tests {
         let config = AppConfig {
             ollama_base_url: " http://localhost:11434/ ".into(),
             model: Some(" qwen3:8b ".into()),
+            thinking: true,
         }
         .normalized()
         .unwrap();
 
         assert_eq!(config.ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
         assert_eq!(config.model.as_deref(), Some("qwen3:8b"));
+        assert!(config.thinking);
     }
 
     #[test]
@@ -190,6 +196,7 @@ mod tests {
         let error = AppConfig {
             ollama_base_url: "not-a-url".into(),
             model: None,
+            thinking: false,
         }
         .normalized()
         .unwrap_err();
