@@ -200,6 +200,7 @@ mod tests {
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: "Explain this".into(),
+                images: Some(vec!["image-data".into()]),
             }],
             stream: true,
             think: false,
@@ -207,6 +208,7 @@ mod tests {
 
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["think"], false);
+        assert_eq!(value["messages"][0]["images"][0], "image-data");
     }
 
     #[test]

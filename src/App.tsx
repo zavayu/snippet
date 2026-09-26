@@ -46,11 +46,21 @@ type ShortcutConfig = {
   summarize: string;
   explain: string;
   refine: string;
+  captureScreen: string;
 };
 
 type SelectionCaptureEvent = {
   selection: CapturedSelection;
   action: QuickAction | null;
+};
+
+type ImageCaptureEvent = {
+  imageId: number;
+  preview: {
+    dataUrl: string;
+    width: number;
+    height: number;
+  };
 };
 
 type CaptureFailure = {
@@ -70,6 +80,7 @@ type AppConfig = {
   ollamaBaseUrl: string;
   model: string | null;
   thinking: boolean;
+  visionEnabled: boolean;
   shortcuts: ShortcutConfig;
 };
 
@@ -114,6 +125,7 @@ function errorText(error: unknown) {
 function App() {
   const [captureState, setCaptureState] = useState<CaptureState>("waiting");
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
+  const [image, setImage] = useState<ImageCaptureEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [customInstruction, setCustomInstruction] = useState("");
   const [generationState, setGenerationState] = useState<GenerationState>("idle");
@@ -196,6 +208,7 @@ function App() {
         activeGenerationRef.current = null;
         lastIntentRef.current = null;
         setSelection(capturedSelection);
+        setImage(null);
         setErrorMessage(null);
         setCustomInstruction("");
         setGenerationState("idle");
@@ -214,6 +227,28 @@ function App() {
             capturedSelection,
           );
         }
+      }),
+      listen<ImageCaptureEvent>("image-captured", (event) => {
+        setIsPopupSurfaceVisible(false);
+        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
+        void invoke("cancel_generation");
+        activeGenerationRef.current = null;
+        lastIntentRef.current = null;
+        setSelection(null);
+        setImage(event.payload);
+        setErrorMessage(null);
+        setCustomInstruction("");
+        setGenerationState("idle");
+        responseTextRef.current = "";
+        setResponseText("");
+        setGenerationError(null);
+        setCopyState("idle");
+        setIsSelectionExpanded(false);
+        setPromptPreview(null);
+        setPromptPreviewError(null);
+        setIsPromptPreviewLoading(false);
+        setIsPromptPreviewExpanded(false);
+        setCaptureState("captured");
       }),
       listen<CaptureFailure>("selection-capture-failed", (event) => {
         setIsPopupSurfaceVisible(false);
@@ -365,7 +400,7 @@ function App() {
     selectionOverride?: CapturedSelection,
   ) => {
     const activeSelection = selectionOverride ?? selection;
-    if (!activeSelection) {
+    if (!activeSelection && !image) {
       return;
     }
 
@@ -381,7 +416,8 @@ function App() {
     try {
       const started = await invoke<GenerationStarted>("generate_for_selection", {
         request: {
-          selectedText: activeSelection.text,
+          selectedText: activeSelection?.text ?? null,
+          imageId: image?.imageId ?? null,
           intent,
         },
       });
@@ -393,7 +429,7 @@ function App() {
   };
 
   const previewPrompt = async () => {
-    if (!selection || !showDevelopmentPreviews) {
+    if ((!selection && !image) || !showDevelopmentPreviews) {
       return;
     }
 
@@ -405,7 +441,8 @@ function App() {
     try {
       const messages = await invoke<ChatMessage[]>("preview_prompt", {
         request: {
-          selectedText: selection.text,
+          selectedText: selection?.text ?? null,
+          hasImage: Boolean(image),
           intent: resolveIntent(),
         },
       });
@@ -438,6 +475,7 @@ function App() {
   const closePopup = () => {
     setIsPopupSurfaceVisible(false);
     void invoke("cancel_generation");
+    void invoke("discard_image_capture");
     void getCurrentWindow().hide();
   };
 
@@ -569,17 +607,42 @@ function App() {
           </header>
 
           {!isSettingsOpen && !hasSubmittedPrompt && (
-            <div className="flex flex-wrap gap-2">
-              {QUICK_ACTIONS.map((action) => (
-                <button
-                  key={action}
-                  type="button"
-                  className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-[10px] font-extrabold text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
-                  onClick={() => void startGeneration({ kind: "quick-action", action })}
-                >
-                  {QUICK_ACTION_LABELS[action]}
-                </button>
-              ))}
+            <div>
+              {image && (
+                <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
+                  <img
+                    alt="Captured screen"
+                    className="size-10 rounded object-cover"
+                    src={image.preview.dataUrl}
+                  />
+                  <span className="min-w-0 flex-1 text-[10px] text-zinc-400">
+                    Screen capture · {image.preview.width} × {image.preview.height}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Remove screen capture"
+                    className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                    onClick={() => {
+                      setImage(null);
+                      void invoke("discard_image_capture");
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {QUICK_ACTIONS.map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-[10px] font-extrabold text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
+                    onClick={() => void startGeneration({ kind: "quick-action", action })}
+                  >
+                    {QUICK_ACTION_LABELS[action]}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -650,6 +713,25 @@ function App() {
                 />
               </label>
 
+              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
+                <span>
+                  <span className="block text-xs font-medium text-zinc-200">Enable image input</span>
+                  <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
+                    Use this only with an Ollama model that supports screenshots.
+                  </span>
+                </span>
+                <input
+                  aria-label="Enable image input"
+                  className="size-3.5 cursor-pointer accent-zinc-100"
+                  type="checkbox"
+                  checked={settingsDraft?.visionEnabled ?? false}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({
+                    ...draft,
+                    visionEnabled: event.target.checked,
+                  }))}
+                />
+              </label>
+
               <div className="mt-4">
                 <p className="text-xs font-medium text-zinc-200">Shortcuts</p>
                 <p className="mt-0.5 text-[10px] leading-4 text-zinc-500">
@@ -661,6 +743,7 @@ function App() {
                     ["summarize", "Summarize"],
                     ["explain", "Explain"],
                     ["refine", "Refine"],
+                    ["captureScreen", "Capture screen"],
                   ] as const).map(([key, label]) => (
                     <label key={key} className="text-[10px] font-medium text-zinc-500">
                       {label}

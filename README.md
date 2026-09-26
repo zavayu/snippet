@@ -26,6 +26,8 @@ of you without breaking your flow.
 
 - **System-wide selection capture** — select text in a browser, editor, or other
   desktop application and press `Ctrl + Shift + Space`.
+- **Current-monitor capture** — press `Ctrl + Shift + I` to attach a resized
+  screenshot of the monitor under your cursor for a vision-capable Ollama model.
 - **Local Ollama inference** — send prompts to a model running on your machine.
 - **Streaming responses** — see the answer as it is generated.
 - **Markdown answers** — read headings, lists, tables, links, and code in a
@@ -100,9 +102,14 @@ The file contains the Ollama address and selected model:
 {
   "ollamaBaseUrl": "http://localhost:11434",
   "model": "your-model-name",
-  "thinking": false
+  "thinking": false,
+  "visionEnabled": false
 }
 ```
+
+Enable image input only when the selected Ollama model supports screenshots.
+The current-monitor capture shortcut is configurable alongside the text-action
+shortcuts and defaults to `Ctrl + Shift + I`.
 
 For development, `SNIPPET_OLLAMA_MODEL` overrides the saved model name without
 changing the settings file. Thinking is disabled by default for faster replies;

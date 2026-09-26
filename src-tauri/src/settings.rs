@@ -16,6 +16,10 @@ pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MODEL_OVERRIDE_ENV: &str = "SNIPPET_OLLAMA_MODEL";
 
+fn default_capture_screen_shortcut() -> String {
+    "Ctrl+Shift+I".into()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortcutConfig {
@@ -23,6 +27,8 @@ pub struct ShortcutConfig {
     pub summarize: String,
     pub explain: String,
     pub refine: String,
+    #[serde(default = "default_capture_screen_shortcut")]
+    pub capture_screen: String,
 }
 
 impl Default for ShortcutConfig {
@@ -32,17 +38,19 @@ impl Default for ShortcutConfig {
             summarize: "Ctrl+Shift+S".into(),
             explain: "Ctrl+Shift+E".into(),
             refine: "Ctrl+Shift+R".into(),
+            capture_screen: default_capture_screen_shortcut(),
         }
     }
 }
 
 impl ShortcutConfig {
-    pub fn bindings(&self) -> [(&str, &str); 4] {
+    pub fn bindings(&self) -> [(&str, &str); 5] {
         [
             ("Open popup", &self.open_popup),
             ("Summarize", &self.summarize),
             ("Explain", &self.explain),
             ("Refine", &self.refine),
+            ("Capture screen", &self.capture_screen),
         ]
     }
 
@@ -53,6 +61,7 @@ impl ShortcutConfig {
             ("Summarize", &mut self.summarize),
             ("Explain", &mut self.explain),
             ("Refine", &mut self.refine),
+            ("Capture screen", &mut self.capture_screen),
         ] {
             *value = value.trim().to_owned();
             if value.is_empty() {
@@ -77,6 +86,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub thinking: bool,
     #[serde(default)]
+    pub vision_enabled: bool,
+    #[serde(default)]
     pub shortcuts: ShortcutConfig,
 }
 
@@ -86,6 +97,7 @@ impl Default for AppConfig {
             ollama_base_url: DEFAULT_OLLAMA_BASE_URL.into(),
             model: None,
             thinking: false,
+            vision_enabled: false,
             shortcuts: ShortcutConfig::default(),
         }
     }
@@ -243,6 +255,7 @@ mod tests {
         assert_eq!(config.ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
         assert_eq!(config.model, None);
         assert!(!config.thinking);
+        assert!(!config.vision_enabled);
     }
 
     #[test]
@@ -251,6 +264,7 @@ mod tests {
             ollama_base_url: " http://localhost:11434/ ".into(),
             model: Some(" qwen3:8b ".into()),
             thinking: true,
+            vision_enabled: true,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -259,6 +273,7 @@ mod tests {
         assert_eq!(config.ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
         assert_eq!(config.model.as_deref(), Some("qwen3:8b"));
         assert!(config.thinking);
+        assert!(config.vision_enabled);
     }
 
     #[test]
@@ -267,6 +282,7 @@ mod tests {
             ollama_base_url: "not-a-url".into(),
             model: None,
             thinking: false,
+            vision_enabled: false,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -281,6 +297,7 @@ mod tests {
         assert_eq!(ShortcutConfig::default().summarize, "Ctrl+Shift+S");
         assert_eq!(ShortcutConfig::default().explain, "Ctrl+Shift+E");
         assert_eq!(ShortcutConfig::default().refine, "Ctrl+Shift+R");
+        assert_eq!(ShortcutConfig::default().capture_screen, "Ctrl+Shift+I");
     }
 
     #[test]
@@ -300,6 +317,16 @@ mod tests {
         .normalized()
         .unwrap_err();
         assert!(matches!(duplicate, SettingsError::DuplicateShortcut));
+    }
+
+    #[test]
+    fn adds_the_screen_capture_shortcut_to_existing_shortcut_settings() {
+        let shortcuts = serde_json::from_str::<ShortcutConfig>(
+            r#"{"openPopup":"Ctrl+Shift+Space","summarize":"Ctrl+Shift+S","explain":"Ctrl+Shift+E","refine":"Ctrl+Shift+R"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(shortcuts.capture_screen, "Ctrl+Shift+I");
     }
 
     #[test]

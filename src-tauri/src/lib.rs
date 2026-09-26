@@ -1,5 +1,6 @@
 pub mod prompt;
 pub mod provider;
+mod screen;
 mod selection;
 mod settings;
 
@@ -11,6 +12,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 
 use arboard::Clipboard;
@@ -38,6 +40,7 @@ use crate::{
 };
 
 const SELECTION_CAPTURED_EVENT: &str = "selection-captured";
+const IMAGE_CAPTURED_EVENT: &str = "image-captured";
 const SELECTION_CAPTURE_FAILED_EVENT: &str = "selection-capture-failed";
 const GENERATION_STARTED_EVENT: &str = "generation-started";
 const GENERATION_CHUNK_EVENT: &str = "generation-chunk";
@@ -53,10 +56,49 @@ const POPUP_WINDOW_OFFSET_Y: i32 = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 #[derive(Default)]
 struct CaptureState(Arc<AtomicBool>);
 
+#[derive(Default)]
+struct ImageCaptureStore {
+    next_id: AtomicU64,
+    active: Mutex<Option<StoredImage>>,
+}
+
+struct StoredImage {
+    id: u64,
+    png_base64: String,
+}
+
+impl ImageCaptureStore {
+    fn store(&self, image: screen::CapturedImage) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Ok(mut active) = self.active.lock() {
+            *active = Some(StoredImage {
+                id,
+                png_base64: image.png_base64,
+            });
+        }
+        id
+    }
+
+    fn take(&self, id: u64) -> Option<String> {
+        let mut active = self.active.lock().ok()?;
+        let matches = active.as_ref().is_some_and(|image| image.id == id);
+        matches
+            .then(|| active.take().map(|image| image.png_base64))
+            .flatten()
+    }
+
+    fn clear(&self) {
+        if let Ok(mut active) = self.active.lock() {
+            *active = None;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ShortcutAction {
     OpenPopup,
     QuickAction(QuickAction),
+    CaptureScreen,
 }
 
 #[derive(Default)]
@@ -157,10 +199,18 @@ struct SelectionCaptureEvent {
     action: Option<QuickAction>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageCaptureEvent {
+    image_id: u64,
+    preview: screen::ImagePreview,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateForSelectionRequest {
-    selected_text: String,
+    selected_text: Option<String>,
+    image_id: Option<u64>,
     intent: crate::prompt::PromptIntent,
 }
 
@@ -226,6 +276,7 @@ macro_rules! snippet_command_handler {
             generate_for_selection,
             cancel_generation,
             copy_response,
+            discard_image_capture,
             preview_prompt,
         ]
     };
@@ -241,6 +292,7 @@ macro_rules! snippet_command_handler {
             generate_for_selection,
             cancel_generation,
             copy_response,
+            discard_image_capture,
         ]
     };
 }
@@ -295,18 +347,39 @@ fn generate_for_selection(
     app: AppHandle,
     settings: State<SettingsStore>,
     generation_state: State<GenerationState>,
+    image_store: State<ImageCaptureStore>,
     request: GenerateForSelectionRequest,
 ) -> Result<GenerationStarted, String> {
     let snapshot = settings.snapshot().map_err(|error| error.user_message())?;
     let model = snapshot
         .effective_model
         .ok_or_else(|| "Choose an Ollama model in Settings before generating.".to_owned())?;
-    let messages = PromptBuilder::build(PromptRequest {
+    if request.image_id.is_some() && !snapshot.config.vision_enabled {
+        return Err("Enable image input in Settings before analyzing a screen capture.".into());
+    }
+    let image = request
+        .image_id
+        .map(|image_id| {
+            image_store.take(image_id).ok_or_else(|| {
+                "That screen capture is no longer available. Capture it again and retry.".to_owned()
+            })
+        })
+        .transpose()?;
+    let mut messages = PromptBuilder::build(PromptRequest {
         selected_text: request.selected_text,
+        has_image: image.is_some(),
         intent: request.intent,
         context: None,
     })
     .map_err(|error| error.user_message())?;
+    if let Some(image) = image {
+        if let Some(user_message) = messages
+            .iter_mut()
+            .find(|message| message.role == crate::prompt::ChatRole::User)
+        {
+            user_message.images = Some(vec![image]);
+        }
+    }
     let provider = OllamaProvider::new(&snapshot.config.ollama_base_url)
         .map_err(|error| error.user_message())?;
 
@@ -400,10 +473,16 @@ fn copy_response(text: String) -> Result<(), String> {
         .map_err(|_| "Snippet could not copy the response. Try again.".to_owned())
 }
 
+#[tauri::command]
+fn discard_image_capture(image_store: State<ImageCaptureStore>) {
+    image_store.clear();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(CaptureState::default())
+        .manage(ImageCaptureStore::default())
         .manage(GenerationState::default())
         .manage(ShortcutBindings::default())
         .plugin(
@@ -452,11 +531,27 @@ fn start_capture(app: &AppHandle, action: ShortcutAction) {
     }
 
     let app_handle = app.clone();
-    thread::spawn(move || {
-        let capture_result = selection::capture_default_selection();
-        publish_capture_result(&app_handle, capture_result, action);
-        state.store(false, Ordering::Release);
-    });
+    match action {
+        ShortcutAction::CaptureScreen => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            thread::spawn(move || {
+                // Give the compositor a moment to remove Snippet before taking the image.
+                thread::sleep(Duration::from_millis(75));
+                let capture_result = screen::capture_current_monitor();
+                publish_image_capture_result(&app_handle, capture_result);
+                state.store(false, Ordering::Release);
+            });
+        }
+        action => {
+            thread::spawn(move || {
+                let capture_result = selection::capture_default_selection();
+                publish_capture_result(&app_handle, capture_result, action);
+                state.store(false, Ordering::Release);
+            });
+        }
+    };
 }
 
 fn apply_shortcuts(
@@ -469,6 +564,7 @@ fn apply_shortcuts(
         ShortcutAction::QuickAction(QuickAction::Summarize),
         ShortcutAction::QuickAction(QuickAction::Explain),
         ShortcutAction::QuickAction(QuickAction::Refine),
+        ShortcutAction::CaptureScreen,
     ];
     let parsed = config
         .bindings()
@@ -510,20 +606,15 @@ fn publish_capture_result(
     capture_result: Result<CapturedSelection, CaptureError>,
     action: ShortcutAction,
 ) {
-    if let Some(window) = app.get_webview_window("main") {
-        #[cfg(target_os = "windows")]
-        position_popup_near_cursor(&window);
-
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    app.state::<ImageCaptureStore>().clear();
+    show_popup(app);
 
     match capture_result {
         Ok(selection) => {
             let action = match action {
                 ShortcutAction::OpenPopup => None,
                 ShortcutAction::QuickAction(action) => Some(action),
+                ShortcutAction::CaptureScreen => None,
             };
             let _ = app.emit(
                 SELECTION_CAPTURED_EVENT,
@@ -538,6 +629,45 @@ fn publish_capture_result(
                 },
             );
         }
+    }
+}
+
+fn publish_image_capture_result(
+    app: &AppHandle,
+    capture_result: Result<
+        (screen::CapturedImage, screen::ImagePreview),
+        screen::ScreenCaptureError,
+    >,
+) {
+    show_popup(app);
+
+    match capture_result {
+        Ok((image, preview)) => {
+            let image_id = app.state::<ImageCaptureStore>().store(image);
+            let _ = app.emit(
+                IMAGE_CAPTURED_EVENT,
+                ImageCaptureEvent { image_id, preview },
+            );
+        }
+        Err(error) => {
+            let _ = app.emit(
+                SELECTION_CAPTURE_FAILED_EVENT,
+                CaptureFailure {
+                    message: error.user_message(),
+                },
+            );
+        }
+    }
+}
+
+fn show_popup(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        position_popup_near_cursor(&window);
+
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
     }
 }
 
