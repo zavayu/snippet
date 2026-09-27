@@ -873,11 +873,11 @@ function App() {
                     </span>
                     {ocrState === "ready" && (
                       <div className="flex items-center gap-1">
-                        {ocrSource === "region" && selection && (
+                        {selection && (
                           <button
                             type="button"
                             aria-expanded={isAttachedTextExpanded}
-                            aria-label={isAttachedTextExpanded ? "Hide attached region text" : "Show attached region text"}
+                            aria-label={isAttachedTextExpanded ? "Hide attached text" : "Show attached text"}
                             title={isAttachedTextExpanded ? "Hide attached text" : "Show attached text"}
                             className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
                             onClick={() => setIsAttachedTextExpanded((expanded) => !expanded)}
@@ -904,7 +904,7 @@ function App() {
                       </div>
                     )}
                   </div>
-                  {ocrState === "ready" && ocrSource === "region" && isAttachedTextExpanded && selection && (
+                  {ocrState === "ready" && isAttachedTextExpanded && selection && (
                     <blockquote className="preview-scroll mt-2 max-h-44 overflow-y-auto whitespace-pre-wrap rounded-lg border border-zinc-800/80 bg-zinc-950/50 p-3 text-xs leading-5 text-zinc-400">
                       {selection.text}
                     </blockquote>
