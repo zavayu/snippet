@@ -18,6 +18,12 @@ pub struct GenerationRequest {
     pub thinking: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct OcrGenerationOptions {
+    pub num_predict: u32,
+    pub num_ctx: u32,
+}
+
 #[derive(Debug, Clone)]
 pub enum GenerationEvent {
     Delta(String),

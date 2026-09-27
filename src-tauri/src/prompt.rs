@@ -78,7 +78,10 @@ impl PromptBuilder {
             .as_deref()
             .map(str::trim)
             .filter(|text| !text.is_empty());
-        if selected_text.is_none() && !request.has_image {
+        if selected_text.is_none()
+            && !request.has_image
+            && matches!(&request.intent, PromptIntent::QuickAction { .. })
+        {
             return Err(PromptBuildError::MissingReference);
         }
 
@@ -269,6 +272,24 @@ mod tests {
             empty_instruction,
             Err(PromptBuildError::EmptyCustomInstruction)
         );
+    }
+
+    #[test]
+    fn builds_a_custom_prompt_without_reference_material() {
+        let messages = PromptBuilder::build(PromptRequest {
+            selected_text: None,
+            has_image: false,
+            intent: PromptIntent::Custom {
+                instruction: "What are useful ways to learn Rust?".into(),
+            },
+            context: None,
+        })
+        .unwrap();
+
+        assert!(messages[1]
+            .content
+            .contains("Task:\nWhat are useful ways to learn Rust?"));
+        assert!(!messages[1].content.contains("Reference text:"));
     }
 
     #[test]

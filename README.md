@@ -30,6 +30,8 @@ of you without breaking your flow.
   screenshot of the monitor under your cursor for a vision-capable Ollama model.
 - **Region capture** — press `Ctrl + Shift + G`, then drag over the part of the
   screen you want Snippet to analyze.
+- **Read screen** — extract text, tables, code, and math from a capture with a
+  local OCR model before reasoning about it.
 - **Local Ollama inference** — send prompts to a model running on your machine.
 - **Streaming responses** — see the answer as it is generated.
 - **Markdown answers** — read headings, lists, tables, links, and code in a
@@ -104,6 +106,9 @@ The file contains the Ollama address and selected model:
 {
   "ollamaBaseUrl": "http://localhost:11434",
   "model": "your-model-name",
+  "ocrModel": "glm-ocr:latest",
+  "ocrNumPredict": 2048,
+  "ocrNumCtx": 16384,
   "thinking": false,
   "visionEnabled": false
 }
@@ -112,6 +117,15 @@ The file contains the Ollama address and selected model:
 Enable image input only when the selected Ollama model supports screenshots.
 The current-monitor and region-capture shortcuts are configurable alongside the
 text-action shortcuts; they default to `Ctrl + Shift + I` and `Ctrl + Shift + G`.
+Read screen and Read region are separate shortcuts, defaulting to
+`Ctrl + Shift + O` and `Ctrl + Shift + T`. They open Snippet immediately,
+extract the capture in the background, and use the result as selected text
+once it is ready. A prompt or text action chosen while OCR is running is sent
+automatically after extraction completes. Configure any shortcut by clicking
+its value in Settings and pressing the desired key combination.
+Read screen uses `glm-ocr:latest` by default and can be changed in Settings.
+Install the default model with `ollama pull glm-ocr:latest`.
+Its output and context limits are available under Settings → Read screen.
 
 For development, `SNIPPET_OLLAMA_MODEL` overrides the saved model name without
 changing the settings file. Thinking is disabled by default for faster replies;

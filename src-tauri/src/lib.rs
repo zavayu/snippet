@@ -33,13 +33,14 @@ use crate::{
     prompt::{PromptBuilder, PromptRequest, QuickAction},
     provider::{
         ollama::OllamaProvider, GenerationEvent, GenerationRequest, LlmProvider, ModelInfo,
-        ProviderError,
+        OcrGenerationOptions, ProviderError,
     },
     selection::{CaptureError, CapturedSelection},
     settings::{AppConfig, SettingsSnapshot, SettingsStore, ShortcutConfig},
 };
 
 const SELECTION_CAPTURED_EVENT: &str = "selection-captured";
+const POPUP_OPENED_EVENT: &str = "popup-opened";
 const IMAGE_CAPTURED_EVENT: &str = "image-captured";
 const SELECTION_CAPTURE_FAILED_EVENT: &str = "selection-capture-failed";
 const GENERATION_STARTED_EVENT: &str = "generation-started";
@@ -47,6 +48,8 @@ const GENERATION_CHUNK_EVENT: &str = "generation-chunk";
 const GENERATION_FINISHED_EVENT: &str = "generation-finished";
 const GENERATION_FAILED_EVENT: &str = "generation-failed";
 const GENERATION_CANCELLED_EVENT: &str = "generation-cancelled";
+const SCREEN_READ_FINISHED_EVENT: &str = "screen-read-finished";
+const SCREEN_READ_FAILED_EVENT: &str = "screen-read-failed";
 const REGION_CAPTURE_WINDOW_LABEL: &str = "region-capture";
 const POPUP_CONTENT_INSET: i32 = 24;
 const POPUP_CURSOR_GAP_X: i32 = 8;
@@ -58,29 +61,39 @@ const POPUP_WINDOW_OFFSET_Y: i32 = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 struct CaptureState(Arc<AtomicBool>);
 
 #[derive(Default)]
-struct RegionCaptureStore(Arc<Mutex<Option<screen::MonitorSnapshot>>>);
+struct RegionCaptureStore(Arc<Mutex<Option<PendingRegionCapture>>>);
+
+struct PendingRegionCapture {
+    snapshot: screen::MonitorSnapshot,
+    auto_read: bool,
+}
 
 impl RegionCaptureStore {
-    fn start(&self, snapshot: screen::MonitorSnapshot) {
+    fn start(&self, snapshot: screen::MonitorSnapshot, auto_read: bool) {
         if let Ok(mut active) = self.0.lock() {
-            *active = Some(snapshot);
+            *active = Some(PendingRegionCapture {
+                snapshot,
+                auto_read,
+            });
         }
     }
 
     fn crop(
         &self,
         region: screen::NormalizedRegion,
-    ) -> Result<(screen::CapturedImage, screen::ImagePreview), screen::ScreenCaptureError> {
+    ) -> Result<(screen::CapturedImage, screen::ImagePreview, bool), screen::ScreenCaptureError>
+    {
         let mut active = self
             .0
             .lock()
             .map_err(|_| screen::ScreenCaptureError::Capture)?;
-        let snapshot = active
+        let pending = active
             .as_ref()
             .ok_or(screen::ScreenCaptureError::InvalidRegion)?;
-        let image = screen::crop_region(snapshot, region)?;
+        let (image, preview) = screen::crop_region(&pending.snapshot, region)?;
+        let auto_read = pending.auto_read;
         *active = None;
-        Ok(image)
+        Ok((image, preview, auto_read))
     }
 
     fn clear(&self) {
@@ -113,12 +126,12 @@ impl ImageCaptureStore {
         id
     }
 
-    fn take(&self, id: u64) -> Option<String> {
-        let mut active = self.active.lock().ok()?;
-        let matches = active.as_ref().is_some_and(|image| image.id == id);
-        matches
-            .then(|| active.take().map(|image| image.png_base64))
-            .flatten()
+    fn get(&self, id: u64) -> Option<String> {
+        let active = self.active.lock().ok()?;
+        active
+            .as_ref()
+            .filter(|image| image.id == id)
+            .map(|image| image.png_base64.clone())
     }
 
     fn clear(&self) {
@@ -134,6 +147,8 @@ enum ShortcutAction {
     QuickAction(QuickAction),
     CaptureScreen,
     CaptureRegion,
+    ReadScreen,
+    ReadRegion,
 }
 
 #[derive(Default)]
@@ -240,6 +255,7 @@ struct ImageCaptureEvent {
     image_id: u64,
     preview: screen::ImagePreview,
     source: ImageCaptureSource,
+    auto_read: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -255,6 +271,12 @@ struct GenerateForSelectionRequest {
     selected_text: Option<String>,
     image_id: Option<u64>,
     intent: crate::prompt::PromptIntent,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadScreenRequest {
+    image_id: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -281,6 +303,14 @@ struct GenerationFinished {
 struct GenerationFailure {
     request_id: u64,
     message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenReadFinished {
+    request_id: u64,
+    image_id: u64,
+    text: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -317,6 +347,7 @@ macro_rules! snippet_command_handler {
             save_settings,
             get_provider_status,
             generate_for_selection,
+            read_screen,
             cancel_generation,
             copy_response,
             discard_image_capture,
@@ -335,6 +366,7 @@ macro_rules! snippet_command_handler {
             save_settings,
             get_provider_status,
             generate_for_selection,
+            read_screen,
             cancel_generation,
             copy_response,
             discard_image_capture,
@@ -407,7 +439,7 @@ fn generate_for_selection(
     let image = request
         .image_id
         .map(|image_id| {
-            image_store.take(image_id).ok_or_else(|| {
+            image_store.get(image_id).ok_or_else(|| {
                 "That screen capture is no longer available. Capture it again and retry.".to_owned()
             })
         })
@@ -502,6 +534,110 @@ fn generate_for_selection(
 }
 
 #[tauri::command]
+fn read_screen(
+    app: AppHandle,
+    settings: State<SettingsStore>,
+    generation_state: State<GenerationState>,
+    image_store: State<ImageCaptureStore>,
+    request: ReadScreenRequest,
+) -> Result<GenerationStarted, String> {
+    let snapshot = settings.snapshot().map_err(|error| error.user_message())?;
+    let image = image_store.get(request.image_id).ok_or_else(|| {
+        "That screen capture is no longer available. Capture it again and retry.".to_owned()
+    })?;
+    let provider = OllamaProvider::new(&snapshot.config.ollama_base_url)
+        .map_err(|error| error.user_message())?;
+    let ocr_options = OcrGenerationOptions {
+        num_predict: snapshot.config.ocr_num_predict,
+        num_ctx: snapshot.config.ocr_num_ctx,
+    };
+    let model = snapshot.config.ocr_model;
+    let model_for_error = model.clone();
+
+    let (request_id, cancellation) = generation_state.begin();
+    let started = GenerationStarted { request_id };
+
+    let app_handle = app.clone();
+    let state = (*generation_state).clone();
+    tauri::async_runtime::spawn(async move {
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let provider_task = tauri::async_runtime::spawn(async move {
+            provider
+                .stream_ocr(model, image, ocr_options, cancellation, event_sender)
+                .await
+        });
+
+        let mut extracted_text = String::new();
+        while let Some(event) = event_receiver.recv().await {
+            if !state.is_active(request_id) {
+                break;
+            }
+
+            match event {
+                GenerationEvent::Delta(delta) => extracted_text.push_str(&delta),
+            }
+        }
+
+        let result = match provider_task.await {
+            Ok(result) => result,
+            Err(error) => Err(ProviderError::RequestFailed(error.to_string())),
+        };
+        if !state.finish(request_id) {
+            return;
+        }
+
+        match result {
+            Ok(()) if !extracted_text.trim().is_empty() => {
+                let _ = app_handle.emit(
+                    SCREEN_READ_FINISHED_EVENT,
+                    ScreenReadFinished {
+                        request_id,
+                        image_id: request.image_id,
+                        text: extracted_text,
+                    },
+                );
+            }
+            Ok(()) => {
+                let _ = app_handle.emit(
+                    SCREEN_READ_FAILED_EVENT,
+                    GenerationFailure {
+                        request_id,
+                        message: "The OCR model did not return readable text. Try a smaller region or another OCR model.".into(),
+                    },
+                );
+            }
+            Err(ProviderError::Cancelled) => {
+                // A new capture or closing the popup cancels OCR. Neither needs a visible error.
+            }
+            Err(ProviderError::RequestFailed(message))
+                if message == "The selected Ollama model is not installed." =>
+            {
+                let _ = app_handle.emit(
+                    SCREEN_READ_FAILED_EVENT,
+                    GenerationFailure {
+                        request_id,
+                        message: format!(
+                            "The OCR model '{model_for_error}' is not installed. Run `ollama pull {model_for_error}`, or choose another OCR model in Settings."
+                        ),
+                    },
+                );
+            }
+            Err(error) => {
+                let _ = app_handle.emit(
+                    SCREEN_READ_FAILED_EVENT,
+                    GenerationFailure {
+                        request_id,
+                        message: error.user_message(),
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(started)
+}
+
+#[tauri::command]
 fn cancel_generation(generation_state: State<GenerationState>) {
     generation_state.cancel();
 }
@@ -533,7 +669,7 @@ fn complete_region_capture(
     image_store: State<ImageCaptureStore>,
     region: screen::NormalizedRegion,
 ) -> Result<(), String> {
-    let (image, preview) = region_store
+    let (image, preview, auto_read) = region_store
         .crop(region)
         .map_err(|error| error.user_message())?;
     let image_id = image_store.store(image);
@@ -545,6 +681,7 @@ fn complete_region_capture(
             image_id,
             preview,
             source: ImageCaptureSource::Region,
+            auto_read,
         },
     );
     capture_state.0.store(false, Ordering::Release);
@@ -617,7 +754,8 @@ fn start_capture(app: &AppHandle, action: ShortcutAction) {
 
     let app_handle = app.clone();
     match action {
-        ShortcutAction::CaptureScreen => {
+        ShortcutAction::CaptureScreen | ShortcutAction::ReadScreen => {
+            let auto_read = matches!(action, ShortcutAction::ReadScreen);
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
             }
@@ -629,11 +767,13 @@ fn start_capture(app: &AppHandle, action: ShortcutAction) {
                     &app_handle,
                     capture_result,
                     ImageCaptureSource::Screen,
+                    auto_read,
                 );
                 state.store(false, Ordering::Release);
             });
         }
-        ShortcutAction::CaptureRegion => {
+        ShortcutAction::CaptureRegion | ShortcutAction::ReadRegion => {
+            let auto_read = matches!(action, ShortcutAction::ReadRegion);
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.hide();
             }
@@ -645,7 +785,9 @@ fn start_capture(app: &AppHandle, action: ShortcutAction) {
                         let callback_app = app_handle.clone();
                         let callback_state = state.clone();
                         let opened = app_handle.run_on_main_thread(move || {
-                            callback_app.state::<RegionCaptureStore>().start(snapshot);
+                            callback_app
+                                .state::<RegionCaptureStore>()
+                                .start(snapshot, auto_read);
                             if let Err(message) = open_region_overlay(&callback_app) {
                                 callback_app.state::<RegionCaptureStore>().clear();
                                 publish_capture_failure(&callback_app, message);
@@ -689,6 +831,8 @@ fn apply_shortcuts(
         ShortcutAction::QuickAction(QuickAction::Refine),
         ShortcutAction::CaptureScreen,
         ShortcutAction::CaptureRegion,
+        ShortcutAction::ReadScreen,
+        ShortcutAction::ReadRegion,
     ];
     let parsed = config
         .bindings()
@@ -740,11 +884,18 @@ fn publish_capture_result(
                 ShortcutAction::QuickAction(action) => Some(action),
                 ShortcutAction::CaptureScreen => None,
                 ShortcutAction::CaptureRegion => None,
+                ShortcutAction::ReadScreen => None,
+                ShortcutAction::ReadRegion => None,
             };
             let _ = app.emit(
                 SELECTION_CAPTURED_EVENT,
                 SelectionCaptureEvent { selection, action },
             );
+        }
+        Err(CaptureError::NoSelection | CaptureError::TimedOut)
+            if matches!(action, ShortcutAction::OpenPopup) =>
+        {
+            let _ = app.emit(POPUP_OPENED_EVENT, ());
         }
         Err(error) => {
             let _ = app.emit(
@@ -764,6 +915,7 @@ fn publish_image_capture_result(
         screen::ScreenCaptureError,
     >,
     source: ImageCaptureSource,
+    auto_read: bool,
 ) {
     show_popup(app);
 
@@ -776,6 +928,7 @@ fn publish_image_capture_result(
                     image_id,
                     preview,
                     source,
+                    auto_read,
                 },
             );
         }
@@ -798,9 +951,10 @@ fn open_region_overlay(app: &AppHandle) -> Result<(), String> {
             .0
             .lock()
             .map_err(|_| "Snippet could not prepare the region selector.".to_owned())?;
-        let snapshot = active
+        let pending = active
             .as_ref()
             .ok_or_else(|| "Snippet could not prepare the region selector.".to_owned())?;
+        let snapshot = &pending.snapshot;
         (snapshot.x, snapshot.y, snapshot.width, snapshot.height)
     };
 
