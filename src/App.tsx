@@ -47,6 +47,7 @@ type ShortcutConfig = {
   explain: string;
   refine: string;
   captureScreen: string;
+  captureRegion: string;
 };
 
 type SelectionCaptureEvent = {
@@ -56,6 +57,7 @@ type SelectionCaptureEvent = {
 
 type ImageCaptureEvent = {
   imageId: number;
+  source: "screen" | "region";
   preview: {
     dataUrl: string;
     width: number;
@@ -611,16 +613,16 @@ function App() {
               {image && (
                 <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
                   <img
-                    alt="Captured screen"
+                    alt={image.source === "region" ? "Captured region" : "Captured screen"}
                     className="size-10 rounded object-cover"
                     src={image.preview.dataUrl}
                   />
                   <span className="min-w-0 flex-1 text-[10px] text-zinc-400">
-                    Screen capture · {image.preview.width} × {image.preview.height}
+                    {image.source === "region" ? "Region capture" : "Screen capture"} · {image.preview.width} × {image.preview.height}
                   </span>
                   <button
                     type="button"
-                    aria-label="Remove screen capture"
+                    aria-label="Remove captured image"
                     className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
                     onClick={() => {
                       setImage(null);
@@ -744,6 +746,7 @@ function App() {
                     ["explain", "Explain"],
                     ["refine", "Refine"],
                     ["captureScreen", "Capture screen"],
+                    ["captureRegion", "Capture region"],
                   ] as const).map(([key, label]) => (
                     <label key={key} className="text-[10px] font-medium text-zinc-500">
                       {label}

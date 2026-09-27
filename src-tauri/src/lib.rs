@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(target_os = "windows")]
-use tauri::{PhysicalPosition, Runtime};
+use tauri::{PhysicalPosition, PhysicalSize, Runtime, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
@@ -47,6 +47,7 @@ const GENERATION_CHUNK_EVENT: &str = "generation-chunk";
 const GENERATION_FINISHED_EVENT: &str = "generation-finished";
 const GENERATION_FAILED_EVENT: &str = "generation-failed";
 const GENERATION_CANCELLED_EVENT: &str = "generation-cancelled";
+const REGION_CAPTURE_WINDOW_LABEL: &str = "region-capture";
 const POPUP_CONTENT_INSET: i32 = 24;
 const POPUP_CURSOR_GAP_X: i32 = 8;
 const POPUP_CURSOR_GAP_Y: i32 = 10;
@@ -55,6 +56,39 @@ const POPUP_WINDOW_OFFSET_Y: i32 = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 
 #[derive(Default)]
 struct CaptureState(Arc<AtomicBool>);
+
+#[derive(Default)]
+struct RegionCaptureStore(Arc<Mutex<Option<screen::MonitorSnapshot>>>);
+
+impl RegionCaptureStore {
+    fn start(&self, snapshot: screen::MonitorSnapshot) {
+        if let Ok(mut active) = self.0.lock() {
+            *active = Some(snapshot);
+        }
+    }
+
+    fn crop(
+        &self,
+        region: screen::NormalizedRegion,
+    ) -> Result<(screen::CapturedImage, screen::ImagePreview), screen::ScreenCaptureError> {
+        let mut active = self
+            .0
+            .lock()
+            .map_err(|_| screen::ScreenCaptureError::Capture)?;
+        let snapshot = active
+            .as_ref()
+            .ok_or(screen::ScreenCaptureError::InvalidRegion)?;
+        let image = screen::crop_region(snapshot, region)?;
+        *active = None;
+        Ok(image)
+    }
+
+    fn clear(&self) {
+        if let Ok(mut active) = self.0.lock() {
+            *active = None;
+        }
+    }
+}
 
 #[derive(Default)]
 struct ImageCaptureStore {
@@ -99,6 +133,7 @@ enum ShortcutAction {
     OpenPopup,
     QuickAction(QuickAction),
     CaptureScreen,
+    CaptureRegion,
 }
 
 #[derive(Default)]
@@ -204,6 +239,14 @@ struct SelectionCaptureEvent {
 struct ImageCaptureEvent {
     image_id: u64,
     preview: screen::ImagePreview,
+    source: ImageCaptureSource,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ImageCaptureSource {
+    Screen,
+    Region,
 }
 
 #[derive(Clone, Deserialize)]
@@ -277,6 +320,8 @@ macro_rules! snippet_command_handler {
             cancel_generation,
             copy_response,
             discard_image_capture,
+            complete_region_capture,
+            cancel_region_capture,
             preview_prompt,
         ]
     };
@@ -293,6 +338,8 @@ macro_rules! snippet_command_handler {
             cancel_generation,
             copy_response,
             discard_image_capture,
+            complete_region_capture,
+            cancel_region_capture,
         ]
     };
 }
@@ -478,10 +525,48 @@ fn discard_image_capture(image_store: State<ImageCaptureStore>) {
     image_store.clear();
 }
 
+#[tauri::command]
+fn complete_region_capture(
+    app: AppHandle,
+    capture_state: State<CaptureState>,
+    region_store: State<RegionCaptureStore>,
+    image_store: State<ImageCaptureStore>,
+    region: screen::NormalizedRegion,
+) -> Result<(), String> {
+    let (image, preview) = region_store
+        .crop(region)
+        .map_err(|error| error.user_message())?;
+    let image_id = image_store.store(image);
+    close_region_overlay(&app);
+    show_popup(&app);
+    let _ = app.emit(
+        IMAGE_CAPTURED_EVENT,
+        ImageCaptureEvent {
+            image_id,
+            preview,
+            source: ImageCaptureSource::Region,
+        },
+    );
+    capture_state.0.store(false, Ordering::Release);
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_region_capture(
+    app: AppHandle,
+    capture_state: State<CaptureState>,
+    region_store: State<RegionCaptureStore>,
+) {
+    region_store.clear();
+    close_region_overlay(&app);
+    capture_state.0.store(false, Ordering::Release);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(CaptureState::default())
+        .manage(RegionCaptureStore::default())
         .manage(ImageCaptureStore::default())
         .manage(GenerationState::default())
         .manage(ShortcutBindings::default())
@@ -540,8 +625,46 @@ fn start_capture(app: &AppHandle, action: ShortcutAction) {
                 // Give the compositor a moment to remove Snippet before taking the image.
                 thread::sleep(Duration::from_millis(75));
                 let capture_result = screen::capture_current_monitor();
-                publish_image_capture_result(&app_handle, capture_result);
+                publish_image_capture_result(
+                    &app_handle,
+                    capture_result,
+                    ImageCaptureSource::Screen,
+                );
                 state.store(false, Ordering::Release);
+            });
+        }
+        ShortcutAction::CaptureRegion => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            thread::spawn(move || {
+                // Capture before showing the overlay so the overlay is never part of the image.
+                let capture_result = screen::capture_current_monitor_snapshot();
+                match capture_result {
+                    Ok(snapshot) => {
+                        let callback_app = app_handle.clone();
+                        let callback_state = state.clone();
+                        let opened = app_handle.run_on_main_thread(move || {
+                            callback_app.state::<RegionCaptureStore>().start(snapshot);
+                            if let Err(message) = open_region_overlay(&callback_app) {
+                                callback_app.state::<RegionCaptureStore>().clear();
+                                publish_capture_failure(&callback_app, message);
+                                callback_state.store(false, Ordering::Release);
+                            }
+                        });
+                        if opened.is_err() {
+                            publish_capture_failure(
+                                &app_handle,
+                                "Snippet could not open the region selector. Try again.".into(),
+                            );
+                            state.store(false, Ordering::Release);
+                        }
+                    }
+                    Err(error) => {
+                        publish_capture_failure(&app_handle, error.user_message());
+                        state.store(false, Ordering::Release);
+                    }
+                }
             });
         }
         action => {
@@ -565,6 +688,7 @@ fn apply_shortcuts(
         ShortcutAction::QuickAction(QuickAction::Explain),
         ShortcutAction::QuickAction(QuickAction::Refine),
         ShortcutAction::CaptureScreen,
+        ShortcutAction::CaptureRegion,
     ];
     let parsed = config
         .bindings()
@@ -615,6 +739,7 @@ fn publish_capture_result(
                 ShortcutAction::OpenPopup => None,
                 ShortcutAction::QuickAction(action) => Some(action),
                 ShortcutAction::CaptureScreen => None,
+                ShortcutAction::CaptureRegion => None,
             };
             let _ = app.emit(
                 SELECTION_CAPTURED_EVENT,
@@ -638,6 +763,7 @@ fn publish_image_capture_result(
         (screen::CapturedImage, screen::ImagePreview),
         screen::ScreenCaptureError,
     >,
+    source: ImageCaptureSource,
 ) {
     show_popup(app);
 
@@ -646,17 +772,94 @@ fn publish_image_capture_result(
             let image_id = app.state::<ImageCaptureStore>().store(image);
             let _ = app.emit(
                 IMAGE_CAPTURED_EVENT,
-                ImageCaptureEvent { image_id, preview },
-            );
-        }
-        Err(error) => {
-            let _ = app.emit(
-                SELECTION_CAPTURE_FAILED_EVENT,
-                CaptureFailure {
-                    message: error.user_message(),
+                ImageCaptureEvent {
+                    image_id,
+                    preview,
+                    source,
                 },
             );
         }
+        Err(error) => {
+            publish_capture_failure(app, error.user_message());
+        }
+    }
+}
+
+fn publish_capture_failure(app: &AppHandle, message: String) {
+    show_popup(app);
+    let _ = app.emit(SELECTION_CAPTURE_FAILED_EVENT, CaptureFailure { message });
+}
+
+#[cfg(target_os = "windows")]
+fn open_region_overlay(app: &AppHandle) -> Result<(), String> {
+    let region_store = app.state::<RegionCaptureStore>();
+    let (x, y, width, height) = {
+        let active = region_store
+            .0
+            .lock()
+            .map_err(|_| "Snippet could not prepare the region selector.".to_owned())?;
+        let snapshot = active
+            .as_ref()
+            .ok_or_else(|| "Snippet could not prepare the region selector.".to_owned())?;
+        (snapshot.x, snapshot.y, snapshot.width, snapshot.height)
+    };
+
+    if let Some(existing) = app.get_webview_window(REGION_CAPTURE_WINDOW_LABEL) {
+        let _ = existing.close();
+    }
+
+    let overlay = WebviewWindowBuilder::new(
+        app,
+        REGION_CAPTURE_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("Select a region")
+    .inner_size(1.0, 1.0)
+    .visible(false)
+    .focused(true)
+    .decorations(false)
+    .resizable(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .build()
+    .map_err(|error| format!("Snippet could not open the region selector: {error}"))?;
+
+    overlay
+        .set_size(PhysicalSize::new(width, height))
+        .map_err(|error| format!("Snippet could not size the region selector: {error}"))?;
+    overlay
+        .set_position(PhysicalPosition::new(x, y))
+        .map_err(|error| format!("Snippet could not position the region selector: {error}"))?;
+    overlay
+        .show()
+        .map_err(|error| format!("Snippet could not show the region selector: {error}"))?;
+    overlay
+        .set_focus()
+        .map_err(|error| format!("Snippet could not focus the region selector: {error}"))?;
+
+    let region_store = region_store.0.clone();
+    let capture_state = app.state::<CaptureState>().0.clone();
+    overlay.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut active) = region_store.lock() {
+                *active = None;
+            }
+            capture_state.store(false, Ordering::Release);
+        }
+    });
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_region_overlay(_app: &AppHandle) -> Result<(), String> {
+    Err("Region capture is currently available on Windows only.".into())
+}
+
+fn close_region_overlay(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(REGION_CAPTURE_WINDOW_LABEL) {
+        let _ = window.close();
     }
 }
 

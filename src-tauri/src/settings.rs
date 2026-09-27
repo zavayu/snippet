@@ -20,6 +20,10 @@ fn default_capture_screen_shortcut() -> String {
     "Ctrl+Shift+I".into()
 }
 
+fn default_capture_region_shortcut() -> String {
+    "Ctrl+Shift+G".into()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortcutConfig {
@@ -29,6 +33,8 @@ pub struct ShortcutConfig {
     pub refine: String,
     #[serde(default = "default_capture_screen_shortcut")]
     pub capture_screen: String,
+    #[serde(default = "default_capture_region_shortcut")]
+    pub capture_region: String,
 }
 
 impl Default for ShortcutConfig {
@@ -39,18 +45,20 @@ impl Default for ShortcutConfig {
             explain: "Ctrl+Shift+E".into(),
             refine: "Ctrl+Shift+R".into(),
             capture_screen: default_capture_screen_shortcut(),
+            capture_region: default_capture_region_shortcut(),
         }
     }
 }
 
 impl ShortcutConfig {
-    pub fn bindings(&self) -> [(&str, &str); 5] {
+    pub fn bindings(&self) -> [(&str, &str); 6] {
         [
             ("Open popup", &self.open_popup),
             ("Summarize", &self.summarize),
             ("Explain", &self.explain),
             ("Refine", &self.refine),
             ("Capture screen", &self.capture_screen),
+            ("Capture region", &self.capture_region),
         ]
     }
 
@@ -62,6 +70,7 @@ impl ShortcutConfig {
             ("Explain", &mut self.explain),
             ("Refine", &mut self.refine),
             ("Capture screen", &mut self.capture_screen),
+            ("Capture region", &mut self.capture_region),
         ] {
             *value = value.trim().to_owned();
             if value.is_empty() {
@@ -298,6 +307,7 @@ mod tests {
         assert_eq!(ShortcutConfig::default().explain, "Ctrl+Shift+E");
         assert_eq!(ShortcutConfig::default().refine, "Ctrl+Shift+R");
         assert_eq!(ShortcutConfig::default().capture_screen, "Ctrl+Shift+I");
+        assert_eq!(ShortcutConfig::default().capture_region, "Ctrl+Shift+G");
     }
 
     #[test]
@@ -327,6 +337,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(shortcuts.capture_screen, "Ctrl+Shift+I");
+        assert_eq!(shortcuts.capture_region, "Ctrl+Shift+G");
     }
 
     #[test]

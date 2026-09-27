@@ -28,6 +28,8 @@ of you without breaking your flow.
   desktop application and press `Ctrl + Shift + Space`.
 - **Current-monitor capture** — press `Ctrl + Shift + I` to attach a resized
   screenshot of the monitor under your cursor for a vision-capable Ollama model.
+- **Region capture** — press `Ctrl + Shift + G`, then drag over the part of the
+  screen you want Snippet to analyze.
 - **Local Ollama inference** — send prompts to a model running on your machine.
 - **Streaming responses** — see the answer as it is generated.
 - **Markdown answers** — read headings, lists, tables, links, and code in a
@@ -108,8 +110,8 @@ The file contains the Ollama address and selected model:
 ```
 
 Enable image input only when the selected Ollama model supports screenshots.
-The current-monitor capture shortcut is configurable alongside the text-action
-shortcuts and defaults to `Ctrl + Shift + I`.
+The current-monitor and region-capture shortcuts are configurable alongside the
+text-action shortcuts; they default to `Ctrl + Shift + I` and `Ctrl + Shift + G`.
 
 For development, `SNIPPET_OLLAMA_MODEL` overrides the saved model name without
 changing the settings file. Thinking is disabled by default for faster replies;
