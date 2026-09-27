@@ -20,7 +20,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 arboard = "3"
 async-trait = "0.1"
+base64 = "0.22"
 futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -28,6 +30,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "sync"] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
+xcap = "0.9"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -14,7 +14,7 @@ import { SHOW_DEVELOPMENT_TOOLS } from "./config";
 
 const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
-const POPUP_MAX_HEIGHT = 720;
+const POPUP_MAX_HEIGHT = 900;
 const POPUP_SHADOW_MARGIN = 24;
 const POPUP_CONTENT_INSET = 24;
 const POPUP_CURSOR_GAP_X = 8;
@@ -24,6 +24,7 @@ const POPUP_WINDOW_OFFSET_Y = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 
 type CaptureState = "waiting" | "captured" | "error";
 type GenerationState = "idle" | "loading" | "streaming" | "complete" | "error";
+type OcrState = "idle" | "reading" | "ready" | "error";
 type QuickAction = "explain" | "summarize" | "refine";
 
 const QUICK_ACTIONS: QuickAction[] = ["explain", "summarize", "refine"];
@@ -46,11 +47,26 @@ type ShortcutConfig = {
   summarize: string;
   explain: string;
   refine: string;
+  captureScreen: string;
+  captureRegion: string;
+  readScreen: string;
+  readRegion: string;
 };
 
 type SelectionCaptureEvent = {
   selection: CapturedSelection;
   action: QuickAction | null;
+};
+
+type ImageCaptureEvent = {
+  imageId: number;
+  source: "screen" | "region";
+  preview: {
+    dataUrl: string;
+    width: number;
+    height: number;
+  };
+  autoRead: boolean;
 };
 
 type CaptureFailure = {
@@ -69,7 +85,11 @@ type ChatMessage = {
 type AppConfig = {
   ollamaBaseUrl: string;
   model: string | null;
+  ocrModel: string;
+  ocrNumPredict: number;
+  ocrNumCtx: number;
   thinking: boolean;
+  visionEnabled: boolean;
   shortcuts: ShortcutConfig;
 };
 
@@ -107,6 +127,61 @@ type GenerationFailure = {
   message: string;
 };
 
+type ScreenReadFinished = {
+  requestId: number;
+  imageId: number;
+  text: string;
+};
+
+type SettingsPage = "general" | "ocr" | "shortcuts";
+type ShortcutKey = keyof ShortcutConfig;
+
+const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
+
+function shortcutKeyFromCode(code: string) {
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3);
+  }
+  if (/^Digit[0-9]$/.test(code)) {
+    return code.slice(5);
+  }
+  if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(code)) {
+    return code;
+  }
+
+  return {
+    Space: "Space",
+    Enter: "Enter",
+    Tab: "Tab",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    Insert: "Insert",
+    Home: "Home",
+    End: "End",
+    PageUp: "PageUp",
+    PageDown: "PageDown",
+    ArrowUp: "ArrowUp",
+    ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+  }[code];
+}
+
+function shortcutFromKeypress(event: ReactKeyboardEvent) {
+  if (MODIFIER_KEYS.has(event.key)) {
+    return null;
+  }
+
+  const key = shortcutKeyFromCode(event.code);
+  const modifiers = [
+    event.ctrlKey && "Ctrl",
+    event.altKey && "Alt",
+    event.shiftKey && "Shift",
+    event.metaKey && "Super",
+  ].filter(Boolean);
+  return key && modifiers.length > 0 ? [...modifiers, key].join("+") : null;
+}
+
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -114,9 +189,14 @@ function errorText(error: unknown) {
 function App() {
   const [captureState, setCaptureState] = useState<CaptureState>("waiting");
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
+  const [image, setImage] = useState<ImageCaptureEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [customInstruction, setCustomInstruction] = useState("");
   const [generationState, setGenerationState] = useState<GenerationState>("idle");
+  const [ocrState, setOcrState] = useState<OcrState>("idle");
+  const [ocrSource, setOcrSource] = useState<ImageCaptureEvent["source"] | null>(null);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [queuedOcrIntent, setQueuedOcrIntent] = useState<PromptIntent | null>(null);
   const [responseText, setResponseText] = useState("");
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
@@ -124,18 +204,32 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>("general");
+  const [recordingShortcut, setRecordingShortcut] = useState<ShortcutKey | null>(null);
   const [isSettingsLoading, setIsSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
+  const [isAttachedTextExpanded, setIsAttachedTextExpanded] = useState(false);
   const [promptPreview, setPromptPreview] = useState<ChatMessage[] | null>(null);
   const [promptPreviewError, setPromptPreviewError] = useState<string | null>(null);
   const [isPromptPreviewLoading, setIsPromptPreviewLoading] = useState(false);
   const [isPromptPreviewExpanded, setIsPromptPreviewExpanded] = useState(false);
   const [isPopupSurfaceVisible, setIsPopupSurfaceVisible] = useState(false);
   const popupContentRef = useRef<HTMLDivElement>(null);
-  const lastPositionedSelectionRef = useRef<CapturedSelection | null>(null);
+  const shouldPositionPopupRef = useRef(false);
   const activeGenerationRef = useRef<number | null>(null);
   const lastIntentRef = useRef<PromptIntent | null>(null);
+  const pendingOcrIntentRef = useRef<PromptIntent | null>(null);
+  const ocrImageIdRef = useRef<number | null>(null);
+  const startGenerationRef = useRef<(
+    intentOverride?: PromptIntent,
+    selectionOverride?: CapturedSelection,
+    bypassOcrWait?: boolean,
+  ) => Promise<void> | null>(null);
+  const startScreenReadRef = useRef<(
+    imageId: number,
+    source: ImageCaptureEvent["source"],
+  ) => Promise<void> | null>(null);
   const responseTextRef = useRef("");
   const copyResetTimeoutRef = useRef<number | null>(null);
 
@@ -188,14 +282,21 @@ function App() {
 
   useEffect(() => {
     const unlisten = Promise.all([
-      listen<SelectionCaptureEvent>("selection-captured", (event) => {
-        const capturedSelection = event.payload.selection;
+      listen("popup-opened", () => {
+        shouldPositionPopupRef.current = true;
         setIsPopupSurfaceVisible(false);
         window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
         void invoke("cancel_generation");
         activeGenerationRef.current = null;
         lastIntentRef.current = null;
-        setSelection(capturedSelection);
+        pendingOcrIntentRef.current = null;
+        ocrImageIdRef.current = null;
+        setSelection(null);
+        setImage(null);
+        setOcrState("idle");
+        setOcrSource(null);
+        setOcrError(null);
+        setQueuedOcrIntent(null);
         setErrorMessage(null);
         setCustomInstruction("");
         setGenerationState("idle");
@@ -204,6 +305,38 @@ function App() {
         setGenerationError(null);
         setCopyState("idle");
         setIsSelectionExpanded(false);
+        setIsAttachedTextExpanded(false);
+        setPromptPreview(null);
+        setPromptPreviewError(null);
+        setIsPromptPreviewLoading(false);
+        setIsPromptPreviewExpanded(false);
+        setCaptureState("waiting");
+      }),
+      listen<SelectionCaptureEvent>("selection-captured", (event) => {
+        const capturedSelection = event.payload.selection;
+        shouldPositionPopupRef.current = true;
+        setIsPopupSurfaceVisible(false);
+        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
+        void invoke("cancel_generation");
+        activeGenerationRef.current = null;
+        lastIntentRef.current = null;
+        pendingOcrIntentRef.current = null;
+        ocrImageIdRef.current = null;
+        setSelection(capturedSelection);
+        setImage(null);
+        setOcrState("idle");
+        setOcrSource(null);
+        setOcrError(null);
+        setQueuedOcrIntent(null);
+        setErrorMessage(null);
+        setCustomInstruction("");
+        setGenerationState("idle");
+        responseTextRef.current = "";
+        setResponseText("");
+        setGenerationError(null);
+        setCopyState("idle");
+        setIsSelectionExpanded(false);
+        setIsAttachedTextExpanded(false);
         setPromptPreview(null);
         setPromptPreviewError(null);
         setIsPromptPreviewExpanded(false);
@@ -215,10 +348,49 @@ function App() {
           );
         }
       }),
+      listen<ImageCaptureEvent>("image-captured", (event) => {
+        shouldPositionPopupRef.current = true;
+        setIsPopupSurfaceVisible(false);
+        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
+        void invoke("cancel_generation");
+        activeGenerationRef.current = null;
+        lastIntentRef.current = null;
+        pendingOcrIntentRef.current = null;
+        ocrImageIdRef.current = event.payload.autoRead ? event.payload.imageId : null;
+        setSelection(null);
+        setImage(event.payload.autoRead ? null : event.payload);
+        setOcrState(event.payload.autoRead ? "reading" : "idle");
+        setOcrSource(event.payload.autoRead ? event.payload.source : null);
+        setOcrError(null);
+        setQueuedOcrIntent(null);
+        setErrorMessage(null);
+        setCustomInstruction("");
+        setGenerationState("idle");
+        responseTextRef.current = "";
+        setResponseText("");
+        setGenerationError(null);
+        setCopyState("idle");
+        setIsSelectionExpanded(false);
+        setIsAttachedTextExpanded(false);
+        setPromptPreview(null);
+        setPromptPreviewError(null);
+        setIsPromptPreviewLoading(false);
+        setIsPromptPreviewExpanded(false);
+        setCaptureState("captured");
+        if (event.payload.autoRead) {
+          void startScreenReadRef.current?.(event.payload.imageId, event.payload.source);
+        }
+      }),
       listen<CaptureFailure>("selection-capture-failed", (event) => {
         setIsPopupSurfaceVisible(false);
         window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
         setSelection(null);
+        setIsAttachedTextExpanded(false);
+        pendingOcrIntentRef.current = null;
+        ocrImageIdRef.current = null;
+        setOcrState("error");
+        setOcrError(event.payload.message);
+        setQueuedOcrIntent(null);
         setErrorMessage(event.payload.message);
         setCaptureState("error");
       }),
@@ -263,6 +435,41 @@ function App() {
         setGenerationState("error");
         setGenerationError(event.payload.message);
       }),
+      listen<ScreenReadFinished>("screen-read-finished", (event) => {
+        if (ocrImageIdRef.current !== event.payload.imageId) {
+          return;
+        }
+        ocrImageIdRef.current = null;
+        const screenText: CapturedSelection = {
+          text: event.payload.text,
+          source: "ui-automation",
+          truncated: false,
+          clipboardRestored: true,
+        };
+        const pendingIntent = pendingOcrIntentRef.current;
+        pendingOcrIntentRef.current = null;
+        setSelection(screenText);
+        setIsAttachedTextExpanded(false);
+        setOcrState("ready");
+        setOcrError(null);
+        setQueuedOcrIntent(null);
+        void invoke("discard_image_capture");
+        if (pendingIntent) {
+          window.queueMicrotask(() => {
+            void startGenerationRef.current?.(pendingIntent, screenText, true);
+          });
+        }
+      }),
+      listen<GenerationFailure>("screen-read-failed", (event) => {
+        if (ocrImageIdRef.current === null) {
+          return;
+        }
+        ocrImageIdRef.current = null;
+        pendingOcrIntentRef.current = null;
+        setOcrState("error");
+        setOcrError(event.payload.message);
+        setQueuedOcrIntent(null);
+      }),
     ]);
 
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -283,28 +490,30 @@ function App() {
 
   useLayoutEffect(() => {
     let cancelled = false;
-    const shouldReposition = selection !== lastPositionedSelectionRef.current;
-    if (shouldReposition) {
-      lastPositionedSelectionRef.current = selection;
-    }
+    const shouldReposition = shouldPositionPopupRef.current;
+    shouldPositionPopupRef.current = false;
 
     const frame = window.requestAnimationFrame(() => {
       const contentHeight = popupContentRef.current?.getBoundingClientRect().height ?? POPUP_MIN_HEIGHT;
-      const nextHeight = Math.min(
-        Math.max(Math.ceil(contentHeight) + POPUP_SHADOW_MARGIN * 2, POPUP_MIN_HEIGHT),
-        POPUP_MAX_HEIGHT,
+      const desiredHeight = Math.max(
+        Math.ceil(contentHeight) + POPUP_SHADOW_MARGIN * 2,
+        POPUP_MIN_HEIGHT,
       );
 
       void (async () => {
         const popupWindow = getCurrentWindow();
+        const cursor = await cursorPosition();
+        const monitor = await monitorFromPoint(cursor.x, cursor.y);
+        const maxHeight = monitor
+          ? Math.min(POPUP_MAX_HEIGHT, Math.max(POPUP_MIN_HEIGHT, monitor.workArea.size.height - 16))
+          : POPUP_MAX_HEIGHT;
+        const nextHeight = Math.min(desiredHeight, maxHeight);
         await popupWindow.setSize(new LogicalSize(POPUP_WIDTH, nextHeight));
 
         if (!shouldReposition) {
           return;
         }
 
-        const cursor = await cursorPosition();
-        const monitor = await monitorFromPoint(cursor.x, cursor.y);
         const popupSize = await popupWindow.outerSize();
 
         if (cancelled || !monitor) {
@@ -334,11 +543,16 @@ function App() {
     errorMessage,
     generationError,
     generationState,
+    ocrError,
+    ocrState,
+    queuedOcrIntent,
+    isAttachedTextExpanded,
     isPromptPreviewExpanded,
     isPromptPreviewLoading,
     isSelectionExpanded,
     isSettingsOpen,
     isSettingsLoading,
+    settingsPage,
     promptPreview,
     promptPreviewError,
     providerStatus,
@@ -363,13 +577,21 @@ function App() {
   const startGeneration = async (
     intentOverride?: PromptIntent,
     selectionOverride?: CapturedSelection,
+    bypassOcrWait = false,
   ) => {
-    const activeSelection = selectionOverride ?? selection;
-    if (!activeSelection) {
+    if (ocrState === "reading" && !bypassOcrWait) {
+      const intent = resolveIntent(intentOverride);
+      pendingOcrIntentRef.current = intent;
+      setQueuedOcrIntent(intent);
       return;
     }
 
     const intent = resolveIntent(intentOverride);
+    const activeSelection = selectionOverride ?? selection;
+    if (!activeSelection && !image && intent.kind !== "custom") {
+      return;
+    }
+
     lastIntentRef.current = intent;
     activeGenerationRef.current = null;
     setGenerationState("loading");
@@ -381,7 +603,8 @@ function App() {
     try {
       const started = await invoke<GenerationStarted>("generate_for_selection", {
         request: {
-          selectedText: activeSelection.text,
+          selectedText: activeSelection?.text ?? null,
+          imageId: image?.imageId ?? null,
           intent,
         },
       });
@@ -392,8 +615,35 @@ function App() {
     }
   };
 
+  startGenerationRef.current = startGeneration;
+
+  const startScreenRead = async (imageId: number, source: ImageCaptureEvent["source"]) => {
+    ocrImageIdRef.current = imageId;
+    setImage(null);
+    setOcrState("reading");
+    setOcrSource(source);
+    setOcrError(null);
+
+    try {
+      await invoke<GenerationStarted>("read_screen", {
+        request: { imageId },
+      });
+    } catch (error) {
+      if (ocrImageIdRef.current !== imageId) {
+        return;
+      }
+      ocrImageIdRef.current = null;
+      pendingOcrIntentRef.current = null;
+      setOcrState("error");
+      setOcrError(errorText(error));
+      setQueuedOcrIntent(null);
+    }
+  };
+
+  startScreenReadRef.current = startScreenRead;
+
   const previewPrompt = async () => {
-    if (!selection || !showDevelopmentPreviews) {
+    if ((!selection && !image) || !showDevelopmentPreviews) {
       return;
     }
 
@@ -405,7 +655,8 @@ function App() {
     try {
       const messages = await invoke<ChatMessage[]>("preview_prompt", {
         request: {
-          selectedText: selection.text,
+          selectedText: selection?.text ?? null,
+          hasImage: Boolean(image),
           intent: resolveIntent(),
         },
       });
@@ -435,9 +686,42 @@ function App() {
     }
   };
 
+  const updateShortcut = (key: ShortcutKey, value: string) => {
+    setSettingsDraft((draft) => draft && ({
+      ...draft,
+      shortcuts: {
+        ...draft.shortcuts,
+        [key]: value,
+      },
+    }));
+  };
+
+  const recordShortcut = (key: ShortcutKey, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Escape") {
+      setRecordingShortcut(null);
+      return;
+    }
+    if (!event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey
+      && (event.key === "Backspace" || event.key === "Delete")) {
+      updateShortcut(key, "");
+      setRecordingShortcut(null);
+      return;
+    }
+
+    const shortcut = shortcutFromKeypress(event);
+    if (shortcut) {
+      updateShortcut(key, shortcut);
+      setRecordingShortcut(null);
+    }
+  };
+
   const closePopup = () => {
     setIsPopupSurfaceVisible(false);
     void invoke("cancel_generation");
+    void invoke("discard_image_capture");
     void getCurrentWindow().hide();
   };
 
@@ -463,6 +747,8 @@ function App() {
 
   const configuredModelIsListed = settingsDraft?.model
     && availableModels.some((model) => model.name === settingsDraft.model);
+  const configuredOcrModelIsListed = settingsDraft
+    && availableModels.some((model) => model.name === settingsDraft.ocrModel);
 
   return (
     <main className="min-h-screen overflow-hidden p-6 text-zinc-100">
@@ -501,7 +787,7 @@ function App() {
                 <input
                   aria-label="Ask about the selection"
                   className="w-full bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
-                  placeholder="Ask about this…"
+                  placeholder={selection || image ? "Ask about this…" : "Ask me anything"}
                   type="text"
                   value={customInstruction}
                   onChange={(event) => {
@@ -540,6 +826,7 @@ function App() {
                   setIsSettingsOpen(false);
                 } else {
                   setIsSettingsOpen(true);
+                  setSettingsPage("general");
                   void refreshProviderStatus();
                 }
               }}
@@ -569,40 +856,145 @@ function App() {
           </header>
 
           {!isSettingsOpen && !hasSubmittedPrompt && (
-            <div className="flex flex-wrap gap-2">
-              {QUICK_ACTIONS.map((action) => (
-                <button
-                  key={action}
-                  type="button"
-                  className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-[10px] font-extrabold text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
-                  onClick={() => void startGeneration({ kind: "quick-action", action })}
-                >
-                  {QUICK_ACTION_LABELS[action]}
-                </button>
-              ))}
+            <div>
+              {ocrState !== "idle" && (
+                <>
+                  <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
+                    {ocrState === "reading" && (
+                      <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5 shrink-0 animate-spin fill-none">
+                        <circle cx="12" cy="12" r="8" className="stroke-zinc-800" strokeWidth="2.5" />
+                        <path d="M20 12a8 8 0 0 0-8-8" className="stroke-zinc-400" strokeLinecap="round" strokeWidth="2.5" />
+                      </svg>
+                    )}
+                    <span className="min-w-0 flex-1 text-[10px] text-zinc-400">
+                      {ocrState === "reading" && `Reading ${ocrSource === "region" ? "region" : "screen"}…${queuedOcrIntent ? " Your request will send when it is ready." : ""}`}
+                      {ocrState === "ready" && `${ocrSource === "region" ? "Region" : "Screen"} text attached`}
+                      {ocrState === "error" && ocrError}
+                    </span>
+                    {ocrState === "ready" && (
+                      <div className="flex items-center gap-1">
+                        {selection && (
+                          <button
+                            type="button"
+                            aria-expanded={isAttachedTextExpanded}
+                            aria-label={isAttachedTextExpanded ? "Hide attached text" : "Show attached text"}
+                            title={isAttachedTextExpanded ? "Hide attached text" : "Show attached text"}
+                            className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                            onClick={() => setIsAttachedTextExpanded((expanded) => !expanded)}
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5 fill-none stroke-current stroke-[2]">
+                              <path strokeLinecap="round" strokeLinejoin="round" d={isAttachedTextExpanded ? "m7 15 5-5 5 5" : "m7 9 5 5 5-5"} />
+                            </svg>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          aria-label="Remove extracted screen text"
+                          className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                          onClick={() => {
+                            setSelection(null);
+                            setOcrState("idle");
+                            setOcrSource(null);
+                            setOcrError(null);
+                            setIsAttachedTextExpanded(false);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {ocrState === "ready" && isAttachedTextExpanded && selection && (
+                    <blockquote className="preview-scroll mt-2 max-h-44 overflow-y-auto whitespace-pre-wrap rounded-lg border border-zinc-800/80 bg-zinc-950/50 p-3 text-xs leading-5 text-zinc-400">
+                      {selection.text}
+                    </blockquote>
+                  )}
+                  <div className="mb-3" />
+                </>
+              )}
+              {image && (
+                <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
+                  <img
+                    alt={image.source === "region" ? "Captured region" : "Captured screen"}
+                    className="size-10 rounded object-cover"
+                    src={image.preview.dataUrl}
+                  />
+                  <span className="min-w-0 flex-1 text-[10px] text-zinc-400">
+                    {image.source === "region" ? "Region capture" : "Screen capture"} · {image.preview.width} × {image.preview.height}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Remove captured image"
+                    className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                    onClick={() => {
+                      setImage(null);
+                      void invoke("discard_image_capture");
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {image && (
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-full bg-violet-500 px-3.5 py-1.5 text-[10px] font-extrabold text-white transition-colors hover:bg-violet-400"
+                    onClick={() => void startScreenRead(image.imageId, image.source)}
+                  >
+                    {image.source === "region" ? "Read region" : "Read screen"}
+                  </button>
+                )}
+                {(selection || image || ocrState === "reading") && QUICK_ACTIONS.map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-[10px] font-extrabold text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
+                    onClick={() => void startGeneration({ kind: "quick-action", action })}
+                  >
+                    {QUICK_ACTION_LABELS[action]}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
           {isSettingsOpen && (
-            <section className="min-h-64 px-1 pt-1">
+            <section className="settings-scroll min-h-64 px-1 pr-2 pt-1">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold text-zinc-200">Local AI</p>
-                  <p className="text-[10px] text-zinc-500">Ollama runs on your computer.</p>
-                </div>
+                <p className="text-sm font-semibold text-zinc-200">Local AI</p>
                 <button
                   type="button"
-                  className="text-[10px] font-medium text-zinc-400 transition-colors hover:text-zinc-100"
+                  className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-100"
                   onClick={() => void refreshProviderStatus()}
                 >
                   Refresh
                 </button>
               </div>
 
-              <label className="mb-3 block text-[10px] font-medium text-zinc-500">
+              <div className="mb-4 flex gap-1 rounded-lg bg-zinc-950/50 p-1">
+                {([
+                  ["general", "General"],
+                  ["ocr", "Read screen"],
+                  ["shortcuts", "Shortcuts"],
+                ] as const).map(([page, label]) => (
+                  <button
+                    key={page}
+                    type="button"
+                    className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${settingsPage === page ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+                    onClick={() => setSettingsPage(page)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {settingsPage === "general" && (
+                <>
+              <label className="mb-4 block text-xs font-medium text-zinc-400">
                 Ollama address
                 <input
-                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-600"
+                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
                   value={settingsDraft?.ollamaBaseUrl ?? ""}
                   onChange={(event) => setSettingsDraft((draft) => draft && ({
                     ...draft,
@@ -611,10 +1003,10 @@ function App() {
                 />
               </label>
 
-              <label className="block text-[10px] font-medium text-zinc-500">
+              <label className="block text-xs font-medium text-zinc-400">
                 Model
                 <select
-                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-600"
+                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
                   value={settingsDraft?.model ?? ""}
                   onChange={(event) => setSettingsDraft((draft) => draft && ({
                     ...draft,
@@ -630,13 +1022,71 @@ function App() {
                   ))}
                 </select>
               </label>
+                </>
+              )}
 
+              {settingsPage === "ocr" && (
+                <>
+              <label className="mt-3 block text-xs font-medium text-zinc-400">
+                Read screen model
+                <select
+                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
+                  value={settingsDraft?.ocrModel ?? ""}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({
+                    ...draft,
+                    ocrModel: event.target.value,
+                  }))}
+                >
+                  {settingsDraft && !configuredOcrModelIsListed && (
+                    <option value={settingsDraft.ocrModel}>{settingsDraft.ocrModel} (not installed)</option>
+                  )}
+                  {availableModels.map((model) => (
+                    <option key={model.name} value={model.name}>{model.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="mt-5 block text-xs font-medium text-zinc-400">
+                Output limit <span className="float-right text-zinc-200">{settingsDraft?.ocrNumPredict ?? 0} tokens</span>
+                <input
+                  aria-label="OCR output limit"
+                  className="mt-2 w-full accent-violet-400"
+                  type="range"
+                  min="256"
+                  max="8192"
+                  step="256"
+                  value={settingsDraft?.ocrNumPredict ?? 2048}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({
+                    ...draft,
+                    ocrNumPredict: Number(event.target.value),
+                  }))}
+                />
+              </label>
+
+              <label className="mt-5 block text-xs font-medium text-zinc-400">
+                Context window <span className="float-right text-zinc-200">{settingsDraft?.ocrNumCtx ?? 0} tokens</span>
+                <input
+                  aria-label="OCR context window"
+                  className="mt-2 w-full accent-violet-400"
+                  type="range"
+                  min="4096"
+                  max="32768"
+                  step="4096"
+                  value={settingsDraft?.ocrNumCtx ?? 16384}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({
+                    ...draft,
+                    ocrNumCtx: Number(event.target.value),
+                  }))}
+                />
+              </label>
+                </>
+              )}
+
+              {settingsPage === "general" && (
+                <>
               <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
                 <span>
-                  <span className="block text-xs font-medium text-zinc-200">Enable thinking</span>
-                  <span className="mt-0.5 block text-[10px] leading-4 text-zinc-500">
-                    Slower, more deliberate replies when supported by the model.
-                  </span>
+                  <span className="block text-sm font-medium text-zinc-200">Enable thinking</span>
                 </span>
                 <input
                   aria-label="Enable thinking"
@@ -650,10 +1100,29 @@ function App() {
                 />
               </label>
 
+              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
+                <span>
+                  <span className="block text-sm font-medium text-zinc-200">Enable direct image analysis</span>
+                </span>
+                <input
+                  aria-label="Enable direct image analysis"
+                  className="size-3.5 cursor-pointer accent-zinc-100"
+                  type="checkbox"
+                  checked={settingsDraft?.visionEnabled ?? false}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({
+                    ...draft,
+                    visionEnabled: event.target.checked,
+                  }))}
+                />
+              </label>
+                </>
+              )}
+
+              {settingsPage === "shortcuts" && (
               <div className="mt-4">
-                <p className="text-xs font-medium text-zinc-200">Shortcuts</p>
-                <p className="mt-0.5 text-[10px] leading-4 text-zinc-500">
-                  Use combinations such as Ctrl+Shift+S. Leave one blank to disable it.
+                <p className="text-sm font-medium text-zinc-200">Shortcuts</p>
+                <p className="mt-1 text-xs text-zinc-400">
+                  Click a shortcut, then press keys.
                 </p>
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   {([
@@ -661,48 +1130,69 @@ function App() {
                     ["summarize", "Summarize"],
                     ["explain", "Explain"],
                     ["refine", "Refine"],
+                    ["captureScreen", "Capture screen"],
+                    ["captureRegion", "Capture region"],
+                    ["readScreen", "Read screen"],
+                    ["readRegion", "Read region"],
                   ] as const).map(([key, label]) => (
-                    <label key={key} className="text-[10px] font-medium text-zinc-500">
+                    <label key={key} className="text-xs font-medium text-zinc-400">
                       {label}
-                      <input
-                        className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-600"
-                        placeholder="Disabled"
-                        value={settingsDraft?.shortcuts[key] ?? ""}
-                        onChange={(event) => setSettingsDraft((draft) => draft && ({
-                          ...draft,
-                          shortcuts: {
-                            ...draft.shortcuts,
-                            [key]: event.target.value,
-                          },
-                        }))}
-                      />
+                      <div className="mt-1 flex gap-1">
+                        <button
+                          type="button"
+                          aria-label={`Record shortcut for ${label}`}
+                          className={`min-w-0 flex-1 rounded-lg border px-2.5 py-2 text-left text-sm outline-none transition-colors ${recordingShortcut === key ? "border-violet-400 bg-violet-500/10 text-violet-100" : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-600"}`}
+                          onClick={() => setRecordingShortcut((current) => current === key ? null : key)}
+                          onBlur={() => setRecordingShortcut((current) => current === key ? null : current)}
+                          onKeyDown={(event) => {
+                            if (recordingShortcut === key) {
+                              recordShortcut(key, event);
+                            }
+                          }}
+                        >
+                          {recordingShortcut === key ? "Press shortcut…" : settingsDraft?.shortcuts[key] || "Disabled"}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Disable ${label} shortcut`}
+                          title="Disable shortcut"
+                          className="grid size-8 shrink-0 place-items-center rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-500 transition-colors hover:border-zinc-600 hover:text-zinc-200"
+                          onClick={() => {
+                            updateShortcut(key, "");
+                            setRecordingShortcut(null);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
                     </label>
                   ))}
                 </div>
               </div>
+              )}
 
               {settings?.modelSource === "environment" && (
-                <p className="mt-2 text-[10px] leading-4 text-zinc-500">
-                  `SNIPPET_OLLAMA_MODEL` is overriding the saved model for this development session.
+                <p className="mt-3 text-xs text-zinc-400">
+                  `SNIPPET_OLLAMA_MODEL` is overriding the saved model.
                 </p>
               )}
               {providerStatus && (
-                <p className="mt-2 text-[10px] leading-4 text-zinc-500">
+                <p className="mt-3 text-xs text-zinc-400">
                   {providerStatus.state === "ready" && "Ollama is ready."}
                   {providerStatus.state === "unavailable" && providerStatus.message}
                   {providerStatus.state === "modelNotConfigured" && "Choose one of the installed models."}
                   {providerStatus.state === "modelMissing" && `${providerStatus.model} is not installed.`}
                 </p>
               )}
-              {settingsError && <p className="mt-2 text-[10px] leading-4 text-amber-200">{settingsError}</p>}
+              {settingsError && <p className="mt-3 text-xs leading-5 text-amber-200">{settingsError}</p>}
 
               <div className="mt-3 flex items-center justify-between gap-3">
-                <span className="text-[10px] text-zinc-600">
+                <span className="text-xs text-zinc-500">
                   {isSettingsLoading ? "Checking Ollama…" : ""}
                 </span>
                 <button
                   type="button"
-                  className="rounded-full bg-zinc-100 px-3 py-1.5 text-[10px] font-bold text-zinc-950 transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
+                  className="rounded-full bg-zinc-100 px-3.5 py-2 text-xs font-bold text-zinc-950 transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
                   disabled={!settingsDraft || isSettingsLoading}
                   onClick={() => void saveSettings()}
                 >

@@ -6,7 +6,8 @@
     "linux"
   ],
   "windows": [
-    "main"
+    "main",
+    "region-capture"
   ],
   "permissions": [
     "global-shortcut:default"
