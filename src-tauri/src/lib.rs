@@ -65,6 +65,84 @@ const POPUP_WINDOW_OFFSET_Y: i32 = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 #[derive(Default)]
 struct CaptureState(Arc<AtomicBool>);
 
+// Serializes installation preparation against new captures and generation.
+#[derive(Default)]
+struct UpdateInstallState(Mutex<bool>);
+
+impl UpdateInstallState {
+    fn prepare(&self, generation: &GenerationState, capture: &CaptureState) -> Result<(), String> {
+        let mut installing = self.0.lock().map_err(|_| "Update state is unavailable.")?;
+        let active = generation
+            .0
+            .active
+            .lock()
+            .map_err(|_| "Generation state is unavailable.")?;
+        if *installing || active.is_some() || capture.0.load(Ordering::Acquire) {
+            return Err("Wait for the current response, screen reading, or capture to finish before installing.".into());
+        }
+        *installing = true;
+        Ok(())
+    }
+
+    fn release(&self) {
+        if let Ok(mut installing) = self.0.lock() {
+            *installing = false;
+        }
+    }
+}
+
+#[tauri::command]
+fn prepare_update_install(
+    install: State<UpdateInstallState>,
+    generation: State<GenerationState>,
+    capture: State<CaptureState>,
+) -> Result<(), String> {
+    install.prepare(&generation, &capture)
+}
+
+#[tauri::command]
+fn release_update_install(install: State<UpdateInstallState>) {
+    install.release();
+}
+
+#[cfg(test)]
+mod update_install_tests {
+    use super::*;
+
+    #[test]
+    fn installation_waits_for_generation_or_ocr_to_finish() {
+        let install = UpdateInstallState::default();
+        let generation = GenerationState::default();
+        let capture = CaptureState::default();
+        let (request_id, _) = generation.begin();
+        assert!(install.prepare(&generation, &capture).is_err());
+        assert!(generation.finish(request_id));
+        assert!(install.prepare(&generation, &capture).is_ok());
+    }
+
+    #[test]
+    fn installation_waits_for_region_capture() {
+        let install = UpdateInstallState::default();
+        let generation = GenerationState::default();
+        let capture = CaptureState::default();
+        capture.0.store(true, Ordering::Release);
+        assert!(install.prepare(&generation, &capture).is_err());
+        capture.0.store(false, Ordering::Release);
+        assert!(install.prepare(&generation, &capture).is_ok());
+    }
+
+    #[test]
+    fn failed_install_can_release_the_reservation_for_retry() {
+        let install = UpdateInstallState::default();
+        let generation = GenerationState::default();
+        let capture = CaptureState::default();
+        assert!(install.prepare(&generation, &capture).is_ok());
+        assert!(install.prepare(&generation, &capture).is_err());
+        install.release();
+        assert!(install.prepare(&generation, &capture).is_ok());
+    }
+}
+
 #[derive(Default)]
 struct RegionCaptureStore(Arc<Mutex<Option<PendingRegionCapture>>>);
 
@@ -348,6 +426,8 @@ fn preview_prompt(request: PromptRequest) -> Result<Vec<ChatMessage>, String> {
 macro_rules! snippet_command_handler {
     () => {
         tauri::generate_handler![
+            prepare_update_install,
+            release_update_install,
             get_settings,
             save_settings,
             get_provider_status,
@@ -367,6 +447,8 @@ macro_rules! snippet_command_handler {
 macro_rules! snippet_command_handler {
     () => {
         tauri::generate_handler![
+            prepare_update_install,
+            release_update_install,
             get_settings,
             save_settings,
             get_provider_status,
@@ -429,11 +511,19 @@ async fn get_provider_status(settings: State<'_, SettingsStore>) -> Result<Provi
 #[tauri::command]
 fn generate_for_selection(
     app: AppHandle,
+    install: State<UpdateInstallState>,
     settings: State<SettingsStore>,
     generation_state: State<GenerationState>,
     image_store: State<ImageCaptureStore>,
     request: GenerateForSelectionRequest,
 ) -> Result<GenerationStarted, String> {
+    let installing = install
+        .0
+        .lock()
+        .map_err(|_| "Update state is unavailable.")?;
+    if *installing {
+        return Err("Snippet is installing an update. Try again after it restarts.".into());
+    }
     let snapshot = settings.snapshot().map_err(|error| error.user_message())?;
     let model = snapshot
         .effective_model
@@ -541,11 +631,19 @@ fn generate_for_selection(
 #[tauri::command]
 fn read_screen(
     app: AppHandle,
+    install: State<UpdateInstallState>,
     settings: State<SettingsStore>,
     generation_state: State<GenerationState>,
     image_store: State<ImageCaptureStore>,
     request: ReadScreenRequest,
 ) -> Result<GenerationStarted, String> {
+    let installing = install
+        .0
+        .lock()
+        .map_err(|_| "Update state is unavailable.")?;
+    if *installing {
+        return Err("Snippet is installing an update. Try again after it restarts.".into());
+    }
     let snapshot = settings.snapshot().map_err(|error| error.user_message())?;
     let image = image_store.get(request.image_id).ok_or_else(|| {
         "That screen capture is no longer available. Capture it again and retry.".to_owned()
@@ -711,6 +809,8 @@ pub fn run() {
             open_popup(app);
         }))
         .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(UpdateInstallState::default())
         .manage(CaptureState::default())
         .manage(RegionCaptureStore::default())
         .manage(ImageCaptureStore::default())
@@ -760,8 +860,9 @@ pub fn run() {
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Snippet", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let updates = MenuItem::with_id(app, "updates", "Check for updates…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Snippet", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &settings, &updates, &quit])?;
     let icon = app
         .default_window_icon()
         .cloned()
@@ -779,6 +880,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = app.emit(OPEN_SETTINGS_EVENT, ());
             }
             "quit" => app.exit(0),
+            "updates" => {
+                show_popup(app);
+                let _ = app.emit("open-updates", ());
+            }
             _ => {}
         })
         .build(app)?;
@@ -800,6 +905,13 @@ fn configure_main_window(app: &AppHandle) {
 }
 
 fn start_capture(app: &AppHandle, action: ShortcutAction) {
+    let install = app.state::<UpdateInstallState>();
+    let Ok(installing) = install.0.lock() else {
+        return;
+    };
+    if *installing {
+        return;
+    }
     let state = app.state::<CaptureState>().0.clone();
     if state.swap(true, Ordering::AcqRel) {
         return;

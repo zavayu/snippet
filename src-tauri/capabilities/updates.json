@@ -1,0 +1,6 @@
+{
+  "identifier": "updates",
+  "description": "Allow the main popup to check, download, and install signed updates",
+  "windows": ["main"],
+  "permissions": ["updater:allow-check", "updater:allow-download", "updater:allow-install"]
+}

@@ -192,16 +192,34 @@ npm run tauri build
 
 ## Releases
 
+See [the release and updater guide](docs/releases.md) for the one-time signing
+secret setup, local builds, and end-to-end update testing.
+
 Public Windows builds are published as an NSIS setup executable on the project's
 GitHub Releases page. The installer is intentionally per-user, so it should not
 need administrator permission.
 
 The repository's release workflow runs when a `vX.Y.Z` tag is pushed. Before
-using it, update the version in `src-tauri/tauri.conf.json` and create the tag
-with the same version. The workflow publishes an unsigned installer; Windows may
+using it, configure the updater signing secret, update the app version, and
+create the tag with the same version. It publishes the installer, a Tauri update
+signature, and `latest.json`. The installer has no Authenticode signature; Windows may
 show a SmartScreen warning for a new or unsigned project. Download only from the
 official GitHub Releases page and verify the published SHA-256 checksum when one
 is provided.
+
+### In-app updates
+
+Settings → Updates shows the installed version, available release notes, and
+download progress. Automatic checks run daily and can be disabled with **Save
+settings**. Choose **Download update**, then **Install and restart** when ready.
+The tray menu also offers **Check for updates**. A small dot on the Settings
+button indicates an available release. Checks do not send selected text or
+screenshots to GitHub.
+
+Downloads are verified against the app's embedded public key. Installation waits
+until responses, OCR, and captures finish. The installer closes and restarts
+Snippet while preserving its configuration. Releases installed before the
+updater was added require one manual upgrade.
 
 ## Privacy
 

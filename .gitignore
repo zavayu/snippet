@@ -21,6 +21,9 @@ src-tauri/target
 !.env.example
 !.env.development
 
+# Private updater signing keys (the public key belongs in tauri.conf.json)
+*.key
+
 # Editor directories and files
 .vscode/*
 .idea

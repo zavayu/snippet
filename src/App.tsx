@@ -13,6 +13,8 @@ import {
 import "./App.css";
 import { MarkdownResponse } from "./components/MarkdownResponse";
 import { SHOW_DEVELOPMENT_TOOLS } from "./config";
+import { UpdatesPanel } from "./components/UpdatesPanel";
+import { updateController, useUpdates } from "./useUpdates";
 
 const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
@@ -93,6 +95,7 @@ type AppConfig = {
   thinking: boolean;
   visionEnabled: boolean;
   hasCompletedOnboarding: boolean;
+  automaticUpdates: boolean;
   shortcuts: ShortcutConfig;
 };
 
@@ -136,7 +139,7 @@ type ScreenReadFinished = {
   text: string;
 };
 
-type SettingsPage = "general" | "ocr" | "shortcuts";
+type SettingsPage = "general" | "ocr" | "shortcuts" | "updates";
 type ShortcutKey = keyof ShortcutConfig;
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
@@ -243,6 +246,7 @@ function App() {
 
   const showDevelopmentPreviews = SHOW_DEVELOPMENT_TOOLS;
   const isGenerating = generationState === "loading" || generationState === "streaming";
+  const updates = useUpdates(settings?.config.automaticUpdates ?? false);
   const hasSubmittedPrompt = generationState !== "idle" || Boolean(responseText) || Boolean(generationError);
   const availableModels = providerStatus && providerStatus.state !== "unavailable"
     ? providerStatus.models
@@ -345,6 +349,14 @@ function App() {
         setSettingsPage("general");
         void loadSettings();
         void loadAutostart();
+      }),
+      listen("open-updates", () => {
+        // Opening update settings must preserve a response already in progress.
+        shouldPositionPopupRef.current = true;
+        setIsPopupSurfaceVisible(true);
+        setIsSettingsOpen(true);
+        setSettingsPage("updates");
+        void updateController.check();
       }),
       listen<SelectionCaptureEvent>("selection-captured", (event) => {
         const capturedSelection = event.payload.selection;
@@ -593,6 +605,10 @@ function App() {
     responseText,
     selection,
     settingsError,
+    updates.phase,
+    updates.version,
+    updates.notes,
+    updates.error,
   ]);
 
   const resolveIntent = (intentOverride?: PromptIntent): PromptIntent => {
@@ -613,6 +629,7 @@ function App() {
     selectionOverride?: CapturedSelection,
     bypassOcrWait = false,
   ) => {
+    if (updateController.getSnapshot().phase === "installing") return;
     if (ocrState === "reading" && !bypassOcrWait) {
       const intent = resolveIntent(intentOverride);
       pendingOcrIntentRef.current = intent;
@@ -652,6 +669,7 @@ function App() {
   startGenerationRef.current = startGeneration;
 
   const startScreenRead = async (imageId: number, source: ImageCaptureEvent["source"]) => {
+    if (updateController.getSnapshot().phase === "installing") return;
     ocrImageIdRef.current = imageId;
     setImage(null);
     setOcrState("reading");
@@ -909,6 +927,7 @@ function App() {
                 }
               }}
             >
+              {updates.version && !isSettingsOpen && <span aria-label="Update available" className="absolute right-0 top-0 size-2 rounded-full bg-violet-400" />}
               {isSettingsOpen ? (
                 <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5 fill-none stroke-current stroke-[1.8]">
                   <path strokeLinecap="round" strokeLinejoin="round" d="m14.5 5-7 7 7 7" />
@@ -1074,14 +1093,14 @@ function App() {
                 </section>
               )}
               <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-zinc-200">Local AI</p>
-                <button
+                <p className="text-sm font-semibold text-zinc-200">{settingsPage === "updates" ? "Updates" : "Local AI"}</p>
+                {settingsPage !== "updates" && <button
                   type="button"
                   className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-100"
                   onClick={() => void refreshProviderStatus()}
                 >
                   Refresh
-                </button>
+                </button>}
               </div>
 
               <div className="mb-4 flex gap-1 rounded-lg bg-zinc-950/50 p-1">
@@ -1089,6 +1108,7 @@ function App() {
                   ["general", "General"],
                   ["ocr", "Read screen"],
                   ["shortcuts", "Shortcuts"],
+                  ["updates", "Updates"],
                 ] as const).map(([page, label]) => (
                   <button
                     key={page}
@@ -1100,6 +1120,13 @@ function App() {
                   </button>
                 ))}
               </div>
+
+              {settingsPage === "updates" && (
+                <UpdatesPanel update={updates}
+                  automatic={settingsDraft?.automaticUpdates ?? true}
+                  onAutomaticChange={(enabled) => setSettingsDraft((draft) => draft && ({ ...draft, automaticUpdates: enabled }))}
+                  busy={isGenerating || ocrState === "reading"} />
+              )}
 
               {settingsPage === "general" && (
                 <>
@@ -1299,12 +1326,12 @@ function App() {
               </div>
               )}
 
-              {settings?.modelSource === "environment" && (
+              {settingsPage !== "updates" && settings?.modelSource === "environment" && (
                 <p className="mt-3 text-xs text-zinc-400">
                   `SNIPPET_OLLAMA_MODEL` is overriding the saved model.
                 </p>
               )}
-              {providerStatus && (
+              {settingsPage !== "updates" && providerStatus && (
                 <p className="mt-3 text-xs text-zinc-400">
                   {providerStatus.state === "ready" && "Ollama is ready."}
                   {providerStatus.state === "unavailable" && providerStatus.message}
@@ -1316,7 +1343,7 @@ function App() {
 
               <div className="mt-3 flex items-center justify-between gap-3">
                 <span className="text-xs text-zinc-500">
-                  {isSettingsLoading ? "Checking Ollama…" : ""}
+                  {isSettingsLoading ? "Saving / loading settings…" : settingsPage === "updates" ? "Preferences apply when saved." : ""}
                 </span>
                 <button
                   type="button"

@@ -25,20 +25,43 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Validate release version and signing setup
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw 'Add the TAURI_SIGNING_PRIVATE_KEY repository secret before releasing. See docs/releases.md.'
+          }
+          $snippetConfig = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $snippetPackage = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REF_NAME -ne "v$($snippetConfig.version)" -or $snippetPackage.version -ne $snippetConfig.version) {
+            throw 'The tag, Tauri version, and package version must match.'
+          }
+
+      - name: Test update behavior
+        run: npm test
+
       - name: Verify the frontend
         run: npm run build
 
       - name: Verify the Rust backend
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Build and publish the Windows installer
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          tauriScript: npx tauri
           tagName: ${{ github.ref_name }}
           releaseName: Snippet ${{ github.ref_name }}
           releaseBody: See the README and release notes for installation details.
           releaseDraft: false
           prerelease: false
-          args: --bundles nsis
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          generateReleaseNotes: true
+          args: --bundles nsis --ci

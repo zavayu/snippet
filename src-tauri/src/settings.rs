@@ -23,6 +23,10 @@ const MAX_OCR_NUM_CTX: u32 = 32_768;
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MODEL_OVERRIDE_ENV: &str = "SNIPPET_OLLAMA_MODEL";
 
+const fn default_automatic_updates() -> bool {
+    true
+}
+
 fn default_capture_screen_shortcut() -> String {
     "Ctrl+Shift+I".into()
 }
@@ -141,6 +145,8 @@ pub struct AppConfig {
     pub vision_enabled: bool,
     #[serde(default)]
     pub has_completed_onboarding: bool,
+    #[serde(default = "default_automatic_updates")]
+    pub automatic_updates: bool,
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
 }
@@ -156,6 +162,7 @@ impl Default for AppConfig {
             thinking: false,
             vision_enabled: false,
             has_completed_onboarding: false,
+            automatic_updates: true,
             shortcuts: ShortcutConfig::default(),
         }
     }
@@ -351,6 +358,7 @@ mod tests {
             thinking: true,
             vision_enabled: true,
             has_completed_onboarding: true,
+            automatic_updates: true,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -377,6 +385,7 @@ mod tests {
             thinking: false,
             vision_enabled: false,
             has_completed_onboarding: false,
+            automatic_updates: true,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -438,6 +447,7 @@ mod tests {
 
         assert_eq!(config.ocr_model, DEFAULT_OCR_MODEL);
         assert!(!config.has_completed_onboarding);
+        assert!(config.automatic_updates);
     }
 
     #[test]
