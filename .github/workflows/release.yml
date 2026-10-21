@@ -1,0 +1,44 @@
+name: Release Snippet
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Verify the frontend
+        run: npm run build
+
+      - name: Verify the Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build and publish the Windows installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Snippet ${{ github.ref_name }}
+          releaseBody: See the README and release notes for installation details.
+          releaseDraft: false
+          prerelease: false
+          args: --bundles nsis

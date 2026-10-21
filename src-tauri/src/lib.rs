@@ -17,7 +17,11 @@ use std::{
 
 use arboard::Clipboard;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, State,
+};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -41,6 +45,7 @@ use crate::{
 
 const SELECTION_CAPTURED_EVENT: &str = "selection-captured";
 const POPUP_OPENED_EVENT: &str = "popup-opened";
+const OPEN_SETTINGS_EVENT: &str = "open-settings";
 const IMAGE_CAPTURED_EVENT: &str = "image-captured";
 const SELECTION_CAPTURE_FAILED_EVENT: &str = "selection-capture-failed";
 const GENERATION_STARTED_EVENT: &str = "generation-started";
@@ -702,6 +707,10 @@ fn cancel_region_capture(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            open_popup(app);
+        }))
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .manage(CaptureState::default())
         .manage(RegionCaptureStore::default())
         .manage(ImageCaptureStore::default())
@@ -740,10 +749,54 @@ pub fn run() {
             let bindings = app.state::<ShortcutBindings>();
             apply_shortcuts(&app.handle(), &bindings, &shortcut_config)
                 .map_err(io::Error::other)?;
+            configure_main_window(&app.handle());
+            build_tray(app)?;
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "Open Snippet", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Snippet", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &settings, &quit])?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("application icon".into()))?;
+
+    let _tray = TrayIconBuilder::with_id("snippet-tray")
+        .icon(icon)
+        .tooltip("Snippet")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => open_popup(app),
+            "settings" => {
+                open_popup(app);
+                let _ = app.emit(OPEN_SETTINGS_EVENT, ());
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn configure_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let window_for_events = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window_for_events.hide();
+        }
+    });
 }
 
 fn start_capture(app: &AppHandle, action: ShortcutAction) {
@@ -1015,6 +1068,11 @@ fn close_region_overlay(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(REGION_CAPTURE_WINDOW_LABEL) {
         let _ = window.close();
     }
+}
+
+fn open_popup(app: &AppHandle) {
+    show_popup(app);
+    let _ = app.emit(POPUP_OPENED_EVENT, ());
 }
 
 fn show_popup(app: &AppHandle) {

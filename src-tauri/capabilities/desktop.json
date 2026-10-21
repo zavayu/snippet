@@ -10,6 +10,7 @@
     "region-capture"
   ],
   "permissions": [
-    "global-shortcut:default"
+    "global-shortcut:default",
+    "autostart:default"
   ]
 }

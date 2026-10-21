@@ -42,6 +42,10 @@ of you without breaking your flow.
   once; Snippet remembers them.
 - **Compact desktop UI** — borderless, always-on-top, cursor-positioned popup
   that stays out of your taskbar.
+- **Runs from the system tray** — close the popup without stopping Snippet; open
+  it, change settings, or quit from the tray menu.
+- **Optional launch at sign-in** — enable it during first-run setup or later in
+  Settings → General to keep shortcuts ready in the background.
 - **Safe clipboard handling** — restores prior plain-text clipboard content when
   possible after capturing a selection.
 
@@ -79,11 +83,12 @@ npm run tauri dev
 
 Then:
 
-1. Open Snippet’s Settings gear.
-2. Confirm the Ollama address (the default is `http://localhost:11434`).
-3. Select an installed model and save.
-4. Highlight text in another application and press `Ctrl + Shift + Space`.
-5. Choose a quick action or enter an instruction.
+1. Snippet opens its first-run setup screen. Install Ollama if needed, confirm
+   the address (the default is `http://localhost:11434`), and select an
+   installed model.
+2. Choose whether Snippet should launch when you sign in, then finish setup.
+3. Highlight text in another application and press `Ctrl + Shift + Space`.
+4. Choose a quick action or enter an instruction.
 
 If Ollama is reachable but no model is listed, install one with Ollama before
 continuing:
@@ -143,6 +148,18 @@ VITE_SHOW_DEVELOPMENT_TOOLS=true
 The tracked `.env.development` keeps this flag off by default, and release builds
 always exclude these preview controls.
 
+### Running in the background
+
+Snippet has no normal application window after it starts. It remains available
+from the Windows system tray and through its configured global shortcuts. The
+popup's close button and `Esc` only hide the popup; choose **Quit Snippet** from
+the tray menu to stop it completely.
+
+The first-run setup offers **Launch Snippet when I sign in**. You can change the
+setting at any time under Settings → General. It starts the hidden tray utility
+at sign-in; it does not start Ollama or a model until you ask Snippet to do
+something.
+
 ## Architecture
 
 ```text
@@ -172,6 +189,19 @@ cargo test --manifest-path src-tauri/Cargo.toml
 # Create a bundled desktop build
 npm run tauri build
 ```
+
+## Releases
+
+Public Windows builds are published as an NSIS setup executable on the project's
+GitHub Releases page. The installer is intentionally per-user, so it should not
+need administrator permission.
+
+The repository's release workflow runs when a `vX.Y.Z` tag is pushed. Before
+using it, update the version in `src-tauri/tauri.conf.json` and create the tag
+with the same version. The workflow publishes an unsigned installer; Windows may
+show a SmartScreen warning for a new or unsigned project. Download only from the
+official GitHub Releases page and verify the published SHA-256 checksum when one
+is provided.
 
 ## Privacy
 

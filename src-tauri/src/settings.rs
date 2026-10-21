@@ -140,6 +140,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub vision_enabled: bool,
     #[serde(default)]
+    pub has_completed_onboarding: bool,
+    #[serde(default)]
     pub shortcuts: ShortcutConfig,
 }
 
@@ -153,6 +155,7 @@ impl Default for AppConfig {
             ocr_num_ctx: DEFAULT_OCR_NUM_CTX,
             thinking: false,
             vision_enabled: false,
+            has_completed_onboarding: false,
             shortcuts: ShortcutConfig::default(),
         }
     }
@@ -334,6 +337,7 @@ mod tests {
         assert_eq!(config.ocr_num_ctx, DEFAULT_OCR_NUM_CTX);
         assert!(!config.thinking);
         assert!(!config.vision_enabled);
+        assert!(!config.has_completed_onboarding);
     }
 
     #[test]
@@ -346,6 +350,7 @@ mod tests {
             ocr_num_ctx: 8_192,
             thinking: true,
             vision_enabled: true,
+            has_completed_onboarding: true,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -358,6 +363,7 @@ mod tests {
         assert_eq!(config.ocr_num_ctx, 8_192);
         assert!(config.thinking);
         assert!(config.vision_enabled);
+        assert!(config.has_completed_onboarding);
     }
 
     #[test]
@@ -370,6 +376,7 @@ mod tests {
             ocr_num_ctx: DEFAULT_OCR_NUM_CTX,
             thinking: false,
             vision_enabled: false,
+            has_completed_onboarding: false,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -430,6 +437,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.ocr_model, DEFAULT_OCR_MODEL);
+        assert!(!config.has_completed_onboarding);
     }
 
     #[test]

@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   cursorPosition,
   getCurrentWindow,
@@ -90,6 +92,7 @@ type AppConfig = {
   ocrNumCtx: number;
   thinking: boolean;
   visionEnabled: boolean;
+  hasCompletedOnboarding: boolean;
   shortcuts: ShortcutConfig;
 };
 
@@ -204,10 +207,15 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [onboardingStartAtLogin, setOnboardingStartAtLogin] = useState(true);
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("general");
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutKey | null>(null);
   const [isSettingsLoading, setIsSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [autostartEnabled, setAutostartEnabled] = useState(false);
+  const [isAutostartLoading, setIsAutostartLoading] = useState(true);
+  const [autostartError, setAutostartError] = useState<string | null>(null);
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
   const [isAttachedTextExpanded, setIsAttachedTextExpanded] = useState(false);
   const [promptPreview, setPromptPreview] = useState<ChatMessage[] | null>(null);
@@ -261,6 +269,11 @@ function App() {
       ]);
       setSettings(snapshot);
       setSettingsDraft(snapshot.config);
+      if (!snapshot.config.hasCompletedOnboarding) {
+        setIsOnboardingOpen(true);
+        setIsSettingsOpen(true);
+        setSettingsPage("general");
+      }
       setProviderStatus(status);
       setSettingsError(null);
     } catch (error) {
@@ -270,8 +283,23 @@ function App() {
     }
   };
 
+  const loadAutostart = async () => {
+    setIsAutostartLoading(true);
+    try {
+      const enabled = await isAutostartEnabled();
+      setAutostartEnabled(enabled);
+      setOnboardingStartAtLogin(enabled || !settings?.config.hasCompletedOnboarding);
+      setAutostartError(null);
+    } catch (error) {
+      setAutostartError(errorText(error));
+    } finally {
+      setIsAutostartLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadSettings();
+    void loadAutostart();
   }, []);
 
   useEffect(() => () => {
@@ -311,6 +339,12 @@ function App() {
         setIsPromptPreviewLoading(false);
         setIsPromptPreviewExpanded(false);
         setCaptureState("waiting");
+      }),
+      listen("open-settings", () => {
+        setIsSettingsOpen(true);
+        setSettingsPage("general");
+        void loadSettings();
+        void loadAutostart();
       }),
       listen<SelectionCaptureEvent>("selection-captured", (event) => {
         const capturedSelection = event.payload.selection;
@@ -686,6 +720,49 @@ function App() {
     }
   };
 
+  const setAutostart = async (enabled: boolean) => {
+    setIsAutostartLoading(true);
+    try {
+      if (enabled) {
+        await enableAutostart();
+      } else {
+        await disableAutostart();
+      }
+      setAutostartEnabled(enabled);
+      setAutostartError(null);
+      return true;
+    } catch (error) {
+      setAutostartError(errorText(error));
+      return false;
+    } finally {
+      setIsAutostartLoading(false);
+    }
+  };
+
+  const finishOnboarding = async () => {
+    if (!settingsDraft || !(settingsDraft.model || settings?.effectiveModel)) {
+      setSettingsError("Choose an installed Ollama model before finishing setup.");
+      return;
+    }
+
+    setIsSettingsLoading(true);
+    try {
+      const config = { ...settingsDraft, hasCompletedOnboarding: true };
+      const snapshot = await invoke<SettingsSnapshot>("save_settings", { config });
+      setSettings(snapshot);
+      setSettingsDraft(snapshot.config);
+      setSettingsError(null);
+      if (!await setAutostart(onboardingStartAtLogin)) {
+        return;
+      }
+      setIsOnboardingOpen(false);
+      await refreshProviderStatus();
+    } catch (error) {
+      setSettingsError(errorText(error));
+      setIsSettingsLoading(false);
+    }
+  };
+
   const updateShortcut = (key: ShortcutKey, value: string) => {
     setSettingsDraft((draft) => draft && ({
       ...draft,
@@ -749,6 +826,7 @@ function App() {
     && availableModels.some((model) => model.name === settingsDraft.model);
   const configuredOcrModelIsListed = settingsDraft
     && availableModels.some((model) => model.name === settingsDraft.ocrModel);
+  const canFinishOnboarding = Boolean(settingsDraft?.model || settings?.effectiveModel);
 
   return (
     <main className="min-h-screen overflow-hidden p-6 text-zinc-100">
@@ -961,6 +1039,40 @@ function App() {
 
           {isSettingsOpen && (
             <section className="settings-scroll min-h-64 px-1 pr-2 pt-1">
+              {isOnboardingOpen && (
+                <section className="mb-4 rounded-xl border border-violet-400/30 bg-violet-500/10 p-3">
+                  <p className="text-sm font-semibold text-zinc-100">Welcome to Snippet</p>
+                  <p className="mt-1 text-xs leading-5 text-zinc-400">
+                    Snippet runs locally through Ollama. Install Ollama, choose a model below, then finish setup.
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-2 text-xs font-medium text-violet-200 underline decoration-violet-300/50 underline-offset-2 hover:text-violet-100"
+                    onClick={() => void openUrl("https://ollama.com/download")}
+                  >
+                    Download Ollama
+                  </button>
+                  <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-700/80 bg-zinc-950/30 px-2.5 py-2">
+                    <span className="text-xs text-zinc-200">Launch Snippet when I sign in</span>
+                    <input
+                      aria-label="Launch Snippet when I sign in"
+                      className="size-3.5 cursor-pointer accent-violet-400"
+                      type="checkbox"
+                      checked={onboardingStartAtLogin}
+                      disabled={isAutostartLoading}
+                      onChange={(event) => setOnboardingStartAtLogin(event.target.checked)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="mt-3 w-full rounded-lg bg-violet-500 px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-45"
+                    disabled={!canFinishOnboarding || isSettingsLoading || isAutostartLoading}
+                    onClick={() => void finishOnboarding()}
+                  >
+                    Finish setup
+                  </button>
+                </section>
+              )}
               <div className="mb-3 flex items-center justify-between gap-3">
                 <p className="text-sm font-semibold text-zinc-200">Local AI</p>
                 <button
@@ -1115,6 +1227,22 @@ function App() {
                   }))}
                 />
               </label>
+
+              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
+                <span>
+                  <span className="block text-sm font-medium text-zinc-200">Launch at sign-in</span>
+                  <span className="block text-xs text-zinc-500">Keep Snippet ready in the background.</span>
+                </span>
+                <input
+                  aria-label="Launch at sign-in"
+                  className="size-3.5 cursor-pointer accent-zinc-100 disabled:cursor-not-allowed"
+                  type="checkbox"
+                  checked={autostartEnabled}
+                  disabled={isAutostartLoading}
+                  onChange={(event) => void setAutostart(event.target.checked)}
+                />
+              </label>
+              {autostartError && <p className="mt-2 text-xs text-rose-300">{autostartError}</p>}
                 </>
               )}
 
