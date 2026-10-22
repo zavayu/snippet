@@ -1,13 +1,14 @@
-```
-               _                  __ 
-   _________  (_)___  ____  ___  / /_
-  / ___/ __ \/ / __ \/ __ \/ _ \/ __/
- (__  ) / / / / /_/ / /_/ /  __/ /_  
-/____/_/ /_/_/ .___/ .___/\___/\__/  
-            /_/   /_/                
-```
+<div align="center">
+  <img src="public/snippet-logo.png" alt="Snippet logo" width="160">
+  <h1>
+  Snippet
+  </h1>
+  <h3>
+    Your local AI companion for the text you are working with.
+  </h3>
+</div>
 
-> Your local AI companion for the text you are working with.
+
 
 Snippet is a small Windows desktop assistant for those moments when you need a
 quick answer about something on your screen. Highlight text in any app, press a
@@ -34,6 +35,10 @@ of you without breaking your flow.
   local OCR model before reasoning about it.
 - **Local Ollama inference** — send prompts to a model running on your machine.
 - **Streaming responses** — see the answer as it is generated.
+- **Follow-up conversations** - expand an answer into a conversation while
+  retaining the original text or screenshot and previous completed replies.
+- **Start over without closing** - clear the conversation and its attachments
+  and return to the compact input with one click.
 - **Markdown answers** — read headings, lists, tables, links, and code in a
   compact, desktop-native format.
 - **Quick actions and custom prompts** — explain, summarize, refine, or provide
@@ -89,6 +94,24 @@ Then:
 2. Choose whether Snippet should launch when you sign in, then finish setup.
 3. Highlight text in another application and press `Ctrl + Shift + Space`.
 4. Choose a quick action or enter an instruction.
+
+## Conversations
+
+After an answer finishes, choose **Copy response**, **Continue conversation**,
+or **New conversation**. Continuing expands the popup and focuses a follow-up
+input beneath the transcript. Press Enter to send, or Shift+Enter for a new
+line. Each assistant reply has its own copy button.
+
+The transcript scrolls while the input stays available. You can stop a response
+and retry it; incomplete turns are marked and excluded from subsequent model
+context. The original selected text, OCR result, or screenshot remains available
+to follow-ups without capturing or reading it again.
+
+**New conversation** cancels any active response, clears the transcript and
+attachments, and returns to **Ask me anything**. Reopening the popup or using a
+capture shortcut also starts a fresh conversation. Conversations are kept only
+in memory. Long conversations have a size limit; start a new conversation when
+Snippet asks you to do so.
 
 If Ollama is reachable but no model is listed, install one with Ollama before
 continuing:

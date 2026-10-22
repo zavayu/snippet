@@ -1,20 +1,22 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   cursorPosition,
+  currentMonitor,
   getCurrentWindow,
   LogicalSize,
   monitorFromPoint,
   PhysicalPosition,
 } from "@tauri-apps/api/window";
 import "./App.css";
-import { MarkdownResponse } from "./components/MarkdownResponse";
 import { SHOW_DEVELOPMENT_TOOLS } from "./config";
 import { UpdatesPanel } from "./components/UpdatesPanel";
 import { updateController, useUpdates } from "./useUpdates";
+import { conversationReducer, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
+import { ConversationPanel } from "./components/ConversationPanel";
 
 const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
@@ -27,7 +29,6 @@ const POPUP_WINDOW_OFFSET_X = POPUP_CURSOR_GAP_X - POPUP_CONTENT_INSET;
 const POPUP_WINDOW_OFFSET_Y = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 
 type CaptureState = "waiting" | "captured" | "error";
-type GenerationState = "idle" | "loading" | "streaming" | "complete" | "error";
 type OcrState = "idle" | "reading" | "ready" | "error";
 type QuickAction = "explain" | "summarize" | "refine";
 
@@ -115,21 +116,15 @@ type ProviderStatus =
   | { state: "modelNotConfigured"; models: ModelInfo[] }
   | { state: "modelMissing"; model: string; models: ModelInfo[] };
 
-type GenerationStarted = {
-  requestId: number;
-};
+type GenerationStarted = GenerationEvent;
 
-type GenerationChunk = {
-  requestId: number;
+type GenerationChunk = GenerationEvent & {
   delta: string;
 };
 
-type GenerationFinished = {
-  requestId: number;
-};
+type GenerationFinished = GenerationEvent;
 
-type GenerationFailure = {
-  requestId: number;
+type GenerationFailure = GenerationEvent & {
   message: string;
 };
 
@@ -193,19 +188,22 @@ function errorText(error: unknown) {
 }
 
 function App() {
+  const conversationIdRef = useRef(Date.now());
+  const nextTurnIdRef = useRef(0);
+  const activeTurnRef = useRef<TurnIdentity | null>(null);
+  const activeRequestPromiseRef = useRef<Promise<unknown>>(Promise.resolve());
+  const [conversation, dispatchConversation] = useReducer(conversationReducer, {
+    conversationId: conversationIdRef.current, expanded: false, turns: [],
+  });
   const [captureState, setCaptureState] = useState<CaptureState>("waiting");
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [image, setImage] = useState<ImageCaptureEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [customInstruction, setCustomInstruction] = useState("");
-  const [generationState, setGenerationState] = useState<GenerationState>("idle");
   const [ocrState, setOcrState] = useState<OcrState>("idle");
   const [ocrSource, setOcrSource] = useState<ImageCaptureEvent["source"] | null>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [queuedOcrIntent, setQueuedOcrIntent] = useState<PromptIntent | null>(null);
-  const [responseText, setResponseText] = useState("");
-  const [generationError, setGenerationError] = useState<string | null>(null);
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
@@ -226,9 +224,9 @@ function App() {
   const [isPromptPreviewLoading, setIsPromptPreviewLoading] = useState(false);
   const [isPromptPreviewExpanded, setIsPromptPreviewExpanded] = useState(false);
   const [isPopupSurfaceVisible, setIsPopupSurfaceVisible] = useState(false);
+  const [popupOpenSequence, setPopupOpenSequence] = useState(0);
   const popupContentRef = useRef<HTMLDivElement>(null);
-  const shouldPositionPopupRef = useRef(false);
-  const activeGenerationRef = useRef<number | null>(null);
+  const popupPositionRequestRef = useRef<{ cursor: Promise<PhysicalPosition | null> } | null>(null);
   const lastIntentRef = useRef<PromptIntent | null>(null);
   const pendingOcrIntentRef = useRef<PromptIntent | null>(null);
   const ocrImageIdRef = useRef<number | null>(null);
@@ -241,16 +239,94 @@ function App() {
     imageId: number,
     source: ImageCaptureEvent["source"],
   ) => Promise<void> | null>(null);
-  const responseTextRef = useRef("");
-  const copyResetTimeoutRef = useRef<number | null>(null);
+  const initialInputRef = useRef<HTMLInputElement>(null);
 
   const showDevelopmentPreviews = SHOW_DEVELOPMENT_TOOLS;
-  const isGenerating = generationState === "loading" || generationState === "streaming";
+  const currentTurn = conversation.turns[conversation.turns.length - 1];
+  const generationState = currentTurn?.status ?? "idle";
+  const isGenerating = isTurnActive(currentTurn);
   const updates = useUpdates(settings?.config.automaticUpdates ?? false);
-  const hasSubmittedPrompt = generationState !== "idle" || Boolean(responseText) || Boolean(generationError);
+  const hasSubmittedPrompt = conversation.turns.length > 0;
   const availableModels = providerStatus && providerStatus.state !== "unavailable"
     ? providerStatus.models
     : [];
+
+  const resetConversation = () => {
+    const conversationId = ++conversationIdRef.current;
+    activeTurnRef.current = null;
+    dispatchConversation({ type: "reset", conversationId });
+    void invoke("reset_conversation", { conversationId }).catch((error) => {
+      if (conversationIdRef.current === conversationId) {
+        setErrorMessage(errorText(error));
+        setCaptureState("error");
+      }
+    });
+    lastIntentRef.current = null;
+    pendingOcrIntentRef.current = null;
+    ocrImageIdRef.current = null;
+    setSelection(null);
+    setImage(null);
+    setOcrState("idle");
+    setOcrSource(null);
+    setOcrError(null);
+    setQueuedOcrIntent(null);
+    setErrorMessage(null);
+    setCustomInstruction("");
+    setIsSelectionExpanded(false);
+    setIsAttachedTextExpanded(false);
+    setPromptPreview(null);
+    setPromptPreviewError(null);
+    setIsPromptPreviewLoading(false);
+    setIsPromptPreviewExpanded(false);
+    setCaptureState("waiting");
+  };
+
+  const finishTurn = (event: GenerationEvent, status: "complete" | "stopped" | "error", message?: string) => {
+    if (!event.context) return;
+    dispatchConversation(status === "error"
+      ? { type: "error", identity: event.context, message: message ?? "Generation failed." }
+      : { type: status, event });
+    if (activeTurnRef.current?.conversationId === event.context.conversationId
+      && activeTurnRef.current.turnId === event.context.turnId) {
+      activeTurnRef.current = null;
+    }
+  };
+
+  const submitTurn = async (
+    kind: "initial" | "follow-up", prompt: string, request: Record<string, unknown>,
+    retry = false, reference?: string,
+  ) => {
+    if (activeTurnRef.current || updateController.getSnapshot().phase === "installing" || !prompt.trim()) return;
+    const identity = { conversationId: conversationIdRef.current, turnId: ++nextTurnIdRef.current };
+    activeTurnRef.current = identity;
+    dispatchConversation({ type: "submit", identity, prompt: prompt.trim(), reference, kind, retry });
+    try {
+      const pending = invoke<GenerationStarted>(kind === "initial" ? "generate_for_selection" : "continue_conversation", {
+        request: { ...request, identity },
+      });
+      activeRequestPromiseRef.current = pending.catch(() => undefined);
+      const started = await pending;
+      // The event can arrive before the command resolves. The reducer accepts
+      // this acknowledgement only while the same turn is still active.
+      dispatchConversation({ type: "started", event: started });
+    } catch (error) {
+      finishTurn({ requestId: 0, context: identity }, "error", errorText(error));
+    }
+  };
+
+  const requestPopupPosition = () => {
+    // Capture the opening location before the pointer moves onto a popup control.
+    popupPositionRequestRef.current = { cursor: cursorPosition().catch(() => null) };
+    setPopupOpenSequence((sequence) => sequence + 1);
+  };
+
+  const openChatPopup = () => {
+    requestPopupPosition();
+    setIsSettingsOpen(false);
+    setSettingsPage("general");
+    setIsPopupSurfaceVisible(false);
+    window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
+  };
 
   const refreshProviderStatus = async () => {
     setIsSettingsLoading(true);
@@ -306,43 +382,11 @@ function App() {
     void loadAutostart();
   }, []);
 
-  useEffect(() => () => {
-    if (copyResetTimeoutRef.current !== null) {
-      window.clearTimeout(copyResetTimeoutRef.current);
-    }
-  }, []);
-
   useEffect(() => {
     const unlisten = Promise.all([
       listen("popup-opened", () => {
-        shouldPositionPopupRef.current = true;
-        setIsPopupSurfaceVisible(false);
-        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
-        void invoke("cancel_generation");
-        activeGenerationRef.current = null;
-        lastIntentRef.current = null;
-        pendingOcrIntentRef.current = null;
-        ocrImageIdRef.current = null;
-        setSelection(null);
-        setImage(null);
-        setOcrState("idle");
-        setOcrSource(null);
-        setOcrError(null);
-        setQueuedOcrIntent(null);
-        setErrorMessage(null);
-        setCustomInstruction("");
-        setGenerationState("idle");
-        responseTextRef.current = "";
-        setResponseText("");
-        setGenerationError(null);
-        setCopyState("idle");
-        setIsSelectionExpanded(false);
-        setIsAttachedTextExpanded(false);
-        setPromptPreview(null);
-        setPromptPreviewError(null);
-        setIsPromptPreviewLoading(false);
-        setIsPromptPreviewExpanded(false);
-        setCaptureState("waiting");
+        resetConversation();
+        openChatPopup();
       }),
       listen("open-settings", () => {
         setIsSettingsOpen(true);
@@ -352,7 +396,7 @@ function App() {
       }),
       listen("open-updates", () => {
         // Opening update settings must preserve a response already in progress.
-        shouldPositionPopupRef.current = true;
+        requestPopupPosition();
         setIsPopupSurfaceVisible(true);
         setIsSettingsOpen(true);
         setSettingsPage("updates");
@@ -360,126 +404,50 @@ function App() {
       }),
       listen<SelectionCaptureEvent>("selection-captured", (event) => {
         const capturedSelection = event.payload.selection;
-        shouldPositionPopupRef.current = true;
-        setIsPopupSurfaceVisible(false);
-        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
-        void invoke("cancel_generation");
-        activeGenerationRef.current = null;
-        lastIntentRef.current = null;
-        pendingOcrIntentRef.current = null;
-        ocrImageIdRef.current = null;
+        resetConversation();
+        openChatPopup();
         setSelection(capturedSelection);
-        setImage(null);
-        setOcrState("idle");
-        setOcrSource(null);
-        setOcrError(null);
-        setQueuedOcrIntent(null);
-        setErrorMessage(null);
-        setCustomInstruction("");
-        setGenerationState("idle");
-        responseTextRef.current = "";
-        setResponseText("");
-        setGenerationError(null);
-        setCopyState("idle");
-        setIsSelectionExpanded(false);
-        setIsAttachedTextExpanded(false);
-        setPromptPreview(null);
-        setPromptPreviewError(null);
-        setIsPromptPreviewExpanded(false);
         setCaptureState("captured");
         if (event.payload.action) {
-          void startGeneration(
+          void startGenerationRef.current?.(
             { kind: "quick-action", action: event.payload.action },
             capturedSelection,
+            true,
           );
         }
       }),
       listen<ImageCaptureEvent>("image-captured", (event) => {
-        shouldPositionPopupRef.current = true;
-        setIsPopupSurfaceVisible(false);
-        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
-        void invoke("cancel_generation");
-        activeGenerationRef.current = null;
-        lastIntentRef.current = null;
-        pendingOcrIntentRef.current = null;
+        resetConversation();
+        openChatPopup();
         ocrImageIdRef.current = event.payload.autoRead ? event.payload.imageId : null;
-        setSelection(null);
         setImage(event.payload.autoRead ? null : event.payload);
         setOcrState(event.payload.autoRead ? "reading" : "idle");
         setOcrSource(event.payload.autoRead ? event.payload.source : null);
-        setOcrError(null);
-        setQueuedOcrIntent(null);
-        setErrorMessage(null);
-        setCustomInstruction("");
-        setGenerationState("idle");
-        responseTextRef.current = "";
-        setResponseText("");
-        setGenerationError(null);
-        setCopyState("idle");
-        setIsSelectionExpanded(false);
-        setIsAttachedTextExpanded(false);
-        setPromptPreview(null);
-        setPromptPreviewError(null);
-        setIsPromptPreviewLoading(false);
-        setIsPromptPreviewExpanded(false);
         setCaptureState("captured");
         if (event.payload.autoRead) {
           void startScreenReadRef.current?.(event.payload.imageId, event.payload.source);
         }
       }),
       listen<CaptureFailure>("selection-capture-failed", (event) => {
-        setIsPopupSurfaceVisible(false);
-        window.requestAnimationFrame(() => setIsPopupSurfaceVisible(true));
-        setSelection(null);
-        setIsAttachedTextExpanded(false);
-        pendingOcrIntentRef.current = null;
-        ocrImageIdRef.current = null;
-        setOcrState("error");
-        setOcrError(event.payload.message);
-        setQueuedOcrIntent(null);
+        resetConversation();
+        openChatPopup();
         setErrorMessage(event.payload.message);
         setCaptureState("error");
       }),
       listen<GenerationStarted>("generation-started", (event) => {
-        activeGenerationRef.current = event.payload.requestId;
-        setGenerationState("loading");
-        responseTextRef.current = "";
-        setResponseText("");
-        setGenerationError(null);
-        setCopyState("idle");
+        dispatchConversation({ type: "started", event: event.payload });
       }),
       listen<GenerationChunk>("generation-chunk", (event) => {
-        if (activeGenerationRef.current !== event.payload.requestId) {
-          return;
-        }
-        setGenerationState("streaming");
-        setResponseText((response) => {
-          const nextResponse = response + event.payload.delta;
-          responseTextRef.current = nextResponse;
-          return nextResponse;
-        });
+        dispatchConversation({ type: "chunk", event: event.payload, delta: event.payload.delta });
       }),
       listen<GenerationFinished>("generation-finished", (event) => {
-        if (activeGenerationRef.current !== event.payload.requestId) {
-          return;
-        }
-        activeGenerationRef.current = null;
-        setGenerationState("complete");
+        finishTurn(event.payload, "complete");
       }),
       listen<GenerationFinished>("generation-cancelled", (event) => {
-        if (activeGenerationRef.current !== event.payload.requestId) {
-          return;
-        }
-        activeGenerationRef.current = null;
-        setGenerationState("complete");
+        finishTurn(event.payload, "stopped");
       }),
       listen<GenerationFailure>("generation-failed", (event) => {
-        if (activeGenerationRef.current !== event.payload.requestId) {
-          return;
-        }
-        activeGenerationRef.current = null;
-        setGenerationState("error");
-        setGenerationError(event.payload.message);
+        if (event.payload.context) finishTurn(event.payload, "error", event.payload.message);
       }),
       listen<ScreenReadFinished>("screen-read-finished", (event) => {
         if (ocrImageIdRef.current !== event.payload.imageId) {
@@ -501,13 +469,16 @@ function App() {
         setQueuedOcrIntent(null);
         void invoke("discard_image_capture");
         if (pendingIntent) {
+          const conversationId = conversationIdRef.current;
           window.queueMicrotask(() => {
-            void startGenerationRef.current?.(pendingIntent, screenText, true);
+            if (conversationIdRef.current === conversationId) {
+              void startGenerationRef.current?.(pendingIntent, screenText, true);
+            }
           });
         }
       }),
-      listen<GenerationFailure>("screen-read-failed", (event) => {
-        if (ocrImageIdRef.current === null) {
+      listen<GenerationFailure & { imageId: number }>("screen-read-failed", (event) => {
+        if (ocrImageIdRef.current !== event.payload.imageId) {
           return;
         }
         ocrImageIdRef.current = null;
@@ -520,9 +491,7 @@ function App() {
 
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setIsPopupSurfaceVisible(false);
-        void invoke("cancel_generation");
-        void getCurrentWindow().hide();
+        closePopup();
       }
     };
 
@@ -536,33 +505,43 @@ function App() {
 
   useLayoutEffect(() => {
     let cancelled = false;
-    const shouldReposition = shouldPositionPopupRef.current;
-    shouldPositionPopupRef.current = false;
+    // Keep an opening request pending if a newer layout cancels this pass.
+    const positionRequest = popupPositionRequestRef.current;
 
     const frame = window.requestAnimationFrame(() => {
-      const contentHeight = popupContentRef.current?.getBoundingClientRect().height ?? POPUP_MIN_HEIGHT;
-      const desiredHeight = Math.max(
-        Math.ceil(contentHeight) + POPUP_SHADOW_MARGIN * 2,
-        POPUP_MIN_HEIGHT,
-      );
-
       void (async () => {
         const popupWindow = getCurrentWindow();
-        const cursor = await cursorPosition();
-        const monitor = await monitorFromPoint(cursor.x, cursor.y);
+        const cursor = positionRequest ? await positionRequest.cursor : null;
+        if (cancelled) {
+          return;
+        }
+        const monitor = cursor
+          ? await monitorFromPoint(cursor.x, cursor.y)
+          : await currentMonitor();
+        if (cancelled) {
+          return;
+        }
         const maxHeight = monitor
-          ? Math.min(POPUP_MAX_HEIGHT, Math.max(POPUP_MIN_HEIGHT, monitor.workArea.size.height - 16))
+          ? Math.min(POPUP_MAX_HEIGHT, Math.max(POPUP_MIN_HEIGHT, monitor.workArea.size.height / monitor.scaleFactor - 16))
           : POPUP_MAX_HEIGHT;
+        popupContentRef.current?.style.setProperty("--popup-max-height", `${maxHeight}px`);
+        const contentHeight = popupContentRef.current?.getBoundingClientRect().height ?? POPUP_MIN_HEIGHT;
+        const desiredHeight = Math.max(Math.ceil(contentHeight) + POPUP_SHADOW_MARGIN * 2, POPUP_MIN_HEIGHT);
         const nextHeight = Math.min(desiredHeight, maxHeight);
         await popupWindow.setSize(new LogicalSize(POPUP_WIDTH, nextHeight));
 
-        if (!shouldReposition) {
+        if (cancelled || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
           return;
         }
 
         const popupSize = await popupWindow.outerSize();
 
-        if (cancelled || !monitor) {
+        const position = !positionRequest ? await popupWindow.outerPosition() : null;
+        if (cancelled || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
+          return;
+        }
+        if (positionRequest) popupPositionRequestRef.current = null;
+        if (!monitor) {
           return;
         }
 
@@ -571,6 +550,15 @@ function App() {
         const minY = workArea.position.y;
         const maxX = Math.max(minX, workArea.position.x + workArea.size.width - popupSize.width);
         const maxY = Math.max(minY, workArea.position.y + workArea.size.height - popupSize.height);
+        if (position) {
+          // Growing into conversation mode may require a small adjustment to
+          // keep the composer on-screen. Otherwise preserve the window anchor.
+          const x = Math.min(Math.max(position.x, minX), maxX);
+          const y = Math.min(Math.max(position.y, minY), maxY);
+          if (x !== position.x || y !== position.y) await popupWindow.setPosition(new PhysicalPosition(x, y));
+          return;
+        }
+        if (!cursor) return;
         const x = Math.min(Math.max(cursor.x + POPUP_WINDOW_OFFSET_X, minX), maxX);
         const y = cursor.y + POPUP_WINDOW_OFFSET_Y <= maxY
           ? cursor.y + POPUP_WINDOW_OFFSET_Y
@@ -585,9 +573,10 @@ function App() {
       window.cancelAnimationFrame(frame);
     };
   }, [
+    popupOpenSequence,
+    conversation,
     captureState,
     errorMessage,
-    generationError,
     generationState,
     ocrError,
     ocrState,
@@ -602,7 +591,6 @@ function App() {
     promptPreview,
     promptPreviewError,
     providerStatus,
-    responseText,
     selection,
     settingsError,
     updates.phase,
@@ -639,31 +627,18 @@ function App() {
 
     const intent = resolveIntent(intentOverride);
     const activeSelection = selectionOverride ?? selection;
-    if (!activeSelection && !image && intent.kind !== "custom") {
+    const activeImage = selectionOverride ? null : image;
+    if (!activeSelection && !activeImage && intent.kind !== "custom") {
       return;
     }
 
     lastIntentRef.current = intent;
-    activeGenerationRef.current = null;
-    setGenerationState("loading");
-    responseTextRef.current = "";
-    setResponseText("");
-    setGenerationError(null);
-    setCopyState("idle");
-
-    try {
-      const started = await invoke<GenerationStarted>("generate_for_selection", {
-        request: {
-          selectedText: activeSelection?.text ?? null,
-          imageId: image?.imageId ?? null,
-          intent,
-        },
-      });
-      activeGenerationRef.current = started.requestId;
-    } catch (error) {
-      setGenerationState("error");
-      setGenerationError(errorText(error));
-    }
+    const prompt = intent.kind === "custom" ? intent.instruction : QUICK_ACTION_LABELS[intent.action];
+    await submitTurn("initial", prompt, {
+      selectedText: activeSelection?.text ?? null,
+      imageId: activeImage?.imageId ?? null,
+      intent,
+    }, Boolean(currentTurn), activeImage ? "Screenshot attached" : activeSelection ? "Reference text attached" : undefined);
   };
 
   startGenerationRef.current = startGeneration;
@@ -678,7 +653,7 @@ function App() {
 
     try {
       await invoke<GenerationStarted>("read_screen", {
-        request: { imageId },
+        request: { imageId, conversationId: conversationIdRef.current },
       });
     } catch (error) {
       if (ocrImageIdRef.current !== imageId) {
@@ -814,30 +789,18 @@ function App() {
   };
 
   const closePopup = () => {
+    popupPositionRequestRef.current = null;
+    resetConversation();
     setIsPopupSurfaceVisible(false);
-    void invoke("cancel_generation");
     void invoke("discard_image_capture");
     void getCurrentWindow().hide();
   };
 
-  const copyResponse = async () => {
-    if (!responseText) {
-      return;
-    }
-
-    try {
-      await invoke("copy_response", { text: responseText });
-      setCopyState("copied");
-      if (copyResetTimeoutRef.current !== null) {
-        window.clearTimeout(copyResetTimeoutRef.current);
-      }
-      copyResetTimeoutRef.current = window.setTimeout(() => {
-        setCopyState("idle");
-        copyResetTimeoutRef.current = null;
-      }, 2500);
-    } catch {
-      setCopyState("error");
-    }
+  const startNewConversation = () => {
+    resetConversation();
+    setIsSettingsOpen(false);
+    void invoke("discard_image_capture");
+    window.requestAnimationFrame(() => initialInputRef.current?.focus());
   };
 
   const configuredModelIsListed = settingsDraft?.model
@@ -854,7 +817,7 @@ function App() {
           className={`popup-surface ${isPopupSurfaceVisible ? "popup-surface--enter" : "popup-surface--hidden"} rounded-[28px] bg-zinc-900 p-4 shadow-lg shadow-black/50`}
         >
           <header
-            className="relative -mx-4 -mt-4 mb-3 flex cursor-grab select-none items-center gap-3 pl-4 pr-24 pt-4 active:cursor-grabbing"
+            className={`relative -mx-4 -mt-4 mb-3 flex cursor-grab select-none items-center gap-3 pl-4 pt-4 active:cursor-grabbing ${conversation.expanded && !isSettingsOpen ? "pr-32" : "pr-24"}`}
             onMouseDown={(event) => {
               if (event.button === 0) {
                 void getCurrentWindow().startDragging().catch(() => undefined);
@@ -862,9 +825,7 @@ function App() {
             }}
           >
             <div data-tauri-drag-region className="flex shrink-0 items-center gap-2">
-              <div data-tauri-drag-region className="grid size-8 place-items-center rounded-lg bg-zinc-100 text-xs font-bold text-zinc-950">
-                S
-              </div>
+              <img data-tauri-drag-region src="/snippet-icon.png" alt="Snippet" draggable={false} width={32} height={32} className="size-8 object-contain" />
             </div>
             {isSettingsOpen && (
               <span data-tauri-drag-region className="min-w-0 flex-1 px-1 py-2 text-[17px] text-zinc-100">
@@ -881,6 +842,7 @@ function App() {
                 }}
               >
                 <input
+                  ref={initialInputRef}
                   aria-label="Ask about the selection"
                   className="w-full bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
                   placeholder={selection || image ? "Ask about this…" : "Ask me anything"}
@@ -911,6 +873,24 @@ function App() {
                 </span>
               </div>
             )}
+            {!isSettingsOpen && hasSubmittedPrompt && !isGenerating && conversation.expanded && (
+              <span data-tauri-drag-region className="min-w-0 flex-1 px-1 py-2 text-[17px] text-zinc-400">
+                Conversation
+              </span>
+            )}
+            {conversation.expanded && !isSettingsOpen && <button
+              type="button"
+              aria-label="New conversation"
+              title="New conversation"
+              className="absolute right-20 top-4 grid size-8 cursor-pointer place-items-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={startNewConversation}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 fill-none stroke-current stroke-[1.8]" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="3" />
+                <path d="M12 8v8m-4-4h8" />
+              </svg>
+            </button>}
             <button
               type="button"
               aria-label={isSettingsOpen ? "Close settings" : "Open local AI settings"}
@@ -1036,7 +1016,7 @@ function App() {
                 {image && (
                   <button
                     type="button"
-                    className="cursor-pointer rounded-full bg-violet-500 px-3.5 py-1.5 text-[10px] font-extrabold text-white transition-colors hover:bg-violet-400"
+                    className="cursor-pointer rounded-full bg-violet-500 px-3.5 py-1.5 text-sm font-normal text-white transition-colors hover:bg-violet-400"
                     onClick={() => void startScreenRead(image.imageId, image.source)}
                   >
                     {image.source === "region" ? "Read region" : "Read screen"}
@@ -1046,7 +1026,7 @@ function App() {
                   <button
                     key={action}
                     type="button"
-                    className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-[10px] font-extrabold text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
+                    className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-sm font-normal text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
                     onClick={() => void startGeneration({ kind: "quick-action", action })}
                   >
                     {QUICK_ACTION_LABELS[action]}
@@ -1113,7 +1093,7 @@ function App() {
                   <button
                     key={page}
                     type="button"
-                    className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${settingsPage === page ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+                    className={`flex-1 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${settingsPage === page ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
                     onClick={() => setSettingsPage(page)}
                   >
                     {label}
@@ -1358,34 +1338,25 @@ function App() {
           )}
 
           {!isSettingsOpen && hasSubmittedPrompt && (
-            <section className="mb-2">
-              {responseText && (
-                <div className="response-scroll max-h-80 overflow-y-auto text-sm leading-5 text-zinc-200">
-                  <MarkdownResponse content={responseText} />
-                  {generationState === "complete" && (
-                    <button
-                      type="button"
-                      aria-label={copyState === "copied" ? "Copied response" : "Copy response"}
-                      title={copyState === "copied" ? "Copied" : "Copy response"}
-                      className="mt-1 inline-flex cursor-pointer items-center rounded-md p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                      onClick={() => void copyResponse()}
-                    >
-                      {copyState === "copied" ? (
-                        <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 fill-none stroke-current stroke-[2]">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4.5 4.5L19 7" />
-                        </svg>
-                      ) : (
-                        <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 fill-none stroke-current stroke-[1.8]">
-                          <rect x="8" y="8" width="11" height="11" rx="2" />
-                          <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
-                        </svg>
-                      )}
-                    </button>
-                  )}
-                </div>
-              )}
-              {generationError && <p className="text-xs leading-5 text-amber-200">{generationError}</p>}
-            </section>
+            <ConversationPanel
+              conversation={conversation}
+              onContinue={() => dispatchConversation({ type: "expand" })}
+              onNewConversation={startNewConversation}
+              onSubmit={(instruction) => void submitTurn("follow-up", instruction, { instruction })}
+              onRetry={() => {
+                if (currentTurn?.kind === "follow-up") {
+                  void submitTurn("follow-up", currentTurn.prompt, { instruction: currentTurn.prompt }, true);
+                } else {
+                  void startGeneration(lastIntentRef.current ?? undefined);
+                }
+              }}
+              onStop={() => {
+                const identity = activeTurnRef.current;
+                void activeRequestPromiseRef.current.then(() => {
+                  if (identity && activeTurnRef.current === identity) void invoke("cancel_generation");
+                });
+              }}
+            />
           )}
 
           {!isSettingsOpen && captureState === "captured" && selection && showDevelopmentPreviews && (

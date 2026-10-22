@@ -58,7 +58,7 @@ jobs:
           tauriScript: npx tauri
           tagName: ${{ github.ref_name }}
           releaseName: Snippet ${{ github.ref_name }}
-          releaseBody: See the README and release notes for installation details.
+          releaseBody: See [CHANGELOG.md](https://github.com/zavayu/snippet/blob/${{ github.ref_name }}/CHANGELOG.md) for release highlights and the README for installation details.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

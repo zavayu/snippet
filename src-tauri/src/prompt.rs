@@ -44,6 +44,7 @@ pub struct PromptRequest {
 pub enum ChatRole {
     System,
     User,
+    Assistant,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

@@ -167,6 +167,7 @@ impl LlmProvider for OllamaProvider {
             messages: request.messages,
             stream: true,
             think: request.thinking,
+            options: OllamaChatOptions { num_ctx: 16_384 },
         };
         let response = self
             .client
@@ -256,6 +257,12 @@ struct OllamaChatRequest {
     messages: Vec<ChatMessage>,
     stream: bool,
     think: bool,
+    options: OllamaChatOptions,
+}
+
+#[derive(Serialize)]
+struct OllamaChatOptions {
+    num_ctx: u32,
 }
 
 #[derive(Serialize)]
@@ -530,10 +537,12 @@ mod tests {
             }],
             stream: true,
             think: false,
+            options: super::OllamaChatOptions { num_ctx: 16_384 },
         };
 
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["think"], false);
+        assert_eq!(value["options"]["num_ctx"], 16_384);
         assert_eq!(value["messages"][0]["images"][0], "image-data");
     }
 

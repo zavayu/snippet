@@ -1,3 +1,4 @@
+mod conversation;
 pub mod prompt;
 pub mod provider;
 mod screen;
@@ -31,7 +32,7 @@ use tauri::{PhysicalPosition, PhysicalSize, Runtime, WebviewUrl, WebviewWindowBu
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
-#[cfg(debug_assertions)]
+use crate::conversation::{Conversation, TurnIdentity};
 use crate::prompt::ChatMessage;
 use crate::{
     prompt::{PromptBuilder, PromptRequest, QuickAction},
@@ -68,6 +69,9 @@ struct CaptureState(Arc<AtomicBool>);
 // Serializes installation preparation against new captures and generation.
 #[derive(Default)]
 struct UpdateInstallState(Mutex<bool>);
+
+#[derive(Default, Clone)]
+struct ConversationState(Arc<Mutex<Conversation>>);
 
 impl UpdateInstallState {
     fn prepare(&self, generation: &GenerationState, capture: &CaptureState) -> Result<(), String> {
@@ -351,6 +355,7 @@ enum ImageCaptureSource {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateForSelectionRequest {
+    identity: TurnIdentity,
     selected_text: Option<String>,
     image_id: Option<u64>,
     intent: crate::prompt::PromptIntent,
@@ -358,14 +363,24 @@ struct GenerateForSelectionRequest {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ContinueConversationRequest {
+    identity: TurnIdentity,
+    instruction: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ReadScreenRequest {
     image_id: u64,
+    conversation_id: u64,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerationStarted {
     request_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<TurnIdentity>,
 }
 
 #[derive(Clone, Serialize)]
@@ -373,12 +388,16 @@ struct GenerationStarted {
 struct GenerationChunk {
     request_id: u64,
     delta: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<TurnIdentity>,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerationFinished {
     request_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<TurnIdentity>,
 }
 
 #[derive(Clone, Serialize)]
@@ -386,6 +405,8 @@ struct GenerationFinished {
 struct GenerationFailure {
     request_id: u64,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<TurnIdentity>,
 }
 
 #[derive(Clone, Serialize)]
@@ -394,6 +415,14 @@ struct ScreenReadFinished {
     request_id: u64,
     image_id: u64,
     text: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenReadFailure {
+    request_id: u64,
+    image_id: u64,
+    message: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -432,6 +461,8 @@ macro_rules! snippet_command_handler {
             save_settings,
             get_provider_status,
             generate_for_selection,
+            continue_conversation,
+            reset_conversation,
             read_screen,
             cancel_generation,
             copy_response,
@@ -453,6 +484,8 @@ macro_rules! snippet_command_handler {
             save_settings,
             get_provider_status,
             generate_for_selection,
+            continue_conversation,
+            reset_conversation,
             read_screen,
             cancel_generation,
             copy_response,
@@ -515,6 +548,7 @@ fn generate_for_selection(
     settings: State<SettingsStore>,
     generation_state: State<GenerationState>,
     image_store: State<ImageCaptureStore>,
+    conversation: State<ConversationState>,
     request: GenerateForSelectionRequest,
 ) -> Result<GenerationStarted, String> {
     let installing = install
@@ -557,28 +591,112 @@ fn generate_for_selection(
     let provider = OllamaProvider::new(&snapshot.config.ollama_base_url)
         .map_err(|error| error.user_message())?;
 
+    let mut session = conversation
+        .0
+        .lock()
+        .map_err(|_| "Conversation is unavailable.")?;
+    if session.reset(request.identity.conversation_id) {
+        generation_state.cancel();
+    }
+    let messages = session.begin(request.identity, Some(messages), None)?;
+    Ok(stream_conversation(
+        app,
+        (*generation_state).clone(),
+        (*conversation).clone(),
+        provider,
+        GenerationRequest {
+            model,
+            messages,
+            thinking: snapshot.config.thinking,
+        },
+        request.identity,
+    ))
+}
+
+#[tauri::command]
+fn continue_conversation(
+    app: AppHandle,
+    install: State<UpdateInstallState>,
+    settings: State<SettingsStore>,
+    generation_state: State<GenerationState>,
+    conversation: State<ConversationState>,
+    request: ContinueConversationRequest,
+) -> Result<GenerationStarted, String> {
+    let installing = install
+        .0
+        .lock()
+        .map_err(|_| "Update state is unavailable.")?;
+    if *installing {
+        return Err("Snippet is installing an update. Try again after it restarts.".into());
+    }
+    let snapshot = settings.snapshot().map_err(|error| error.user_message())?;
+    let model = snapshot
+        .effective_model
+        .ok_or_else(|| "Choose an Ollama model in Settings before generating.".to_owned())?;
+    let provider = OllamaProvider::new(&snapshot.config.ollama_base_url)
+        .map_err(|error| error.user_message())?;
+    let mut session = conversation
+        .0
+        .lock()
+        .map_err(|_| "Conversation is unavailable.")?;
+    let messages = session.begin(request.identity, None, Some(request.instruction))?;
+    Ok(stream_conversation(
+        app,
+        (*generation_state).clone(),
+        (*conversation).clone(),
+        provider,
+        GenerationRequest {
+            model,
+            messages,
+            thinking: snapshot.config.thinking,
+        },
+        request.identity,
+    ))
+}
+
+#[tauri::command]
+fn reset_conversation(
+    conversation_id: u64,
+    conversation: State<ConversationState>,
+    generation: State<GenerationState>,
+) -> Result<(), String> {
+    let mut session = conversation
+        .0
+        .lock()
+        .map_err(|_| "Conversation is unavailable.")?;
+    if session.reset(conversation_id) {
+        generation.cancel();
+    }
+    Ok(())
+}
+
+fn stream_conversation(
+    app: AppHandle,
+    generation_state: GenerationState,
+    conversation: ConversationState,
+    provider: OllamaProvider,
+    request: GenerationRequest,
+    identity: TurnIdentity,
+) -> GenerationStarted {
     let (request_id, cancellation) = generation_state.begin();
-    let started = GenerationStarted { request_id };
+    let context = Some(identity);
+    let started = GenerationStarted {
+        request_id,
+        context,
+    };
     let _ = app.emit(GENERATION_STARTED_EVENT, started.clone());
 
     let app_handle = app.clone();
-    let state = (*generation_state).clone();
+    let state = generation_state;
     tauri::async_runtime::spawn(async move {
         let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
         let provider_task = tauri::async_runtime::spawn(async move {
             provider
-                .stream_generation(
-                    GenerationRequest {
-                        model,
-                        messages,
-                        thinking: snapshot.config.thinking,
-                    },
-                    cancellation,
-                    event_sender,
-                )
+                .stream_generation(request, cancellation, event_sender)
                 .await
         });
 
+        let mut response = String::new();
         while let Some(event) = event_receiver.recv().await {
             if !state.is_active(request_id) {
                 break;
@@ -586,31 +704,56 @@ fn generate_for_selection(
 
             match event {
                 GenerationEvent::Delta(delta) => {
+                    response.push_str(&delta);
                     let _ = app_handle.emit(
                         GENERATION_CHUNK_EVENT,
-                        GenerationChunk { request_id, delta },
+                        GenerationChunk {
+                            request_id,
+                            delta,
+                            context,
+                        },
                     );
                 }
             }
         }
 
-        let result = match provider_task.await {
+        let mut result = match provider_task.await {
             Ok(result) => result,
             Err(error) => Err(ProviderError::RequestFailed(error.to_string())),
         };
         if !state.finish(request_id) {
             return;
         }
+        if result.is_ok() && response.trim().is_empty() {
+            result = Err(ProviderError::InvalidResponse(
+                "Empty assistant response".into(),
+            ));
+        }
+        let Ok(mut session) = conversation.0.lock() else {
+            return;
+        };
+        if !session.finish(identity, result.is_ok().then_some(response)) {
+            return;
+        }
+        drop(session);
 
         match result {
             Ok(()) => {
-                let _ =
-                    app_handle.emit(GENERATION_FINISHED_EVENT, GenerationFinished { request_id });
+                let _ = app_handle.emit(
+                    GENERATION_FINISHED_EVENT,
+                    GenerationFinished {
+                        request_id,
+                        context,
+                    },
+                );
             }
             Err(ProviderError::Cancelled) => {
                 let _ = app_handle.emit(
                     GENERATION_CANCELLED_EVENT,
-                    GenerationFinished { request_id },
+                    GenerationFinished {
+                        request_id,
+                        context,
+                    },
                 );
             }
             Err(error) => {
@@ -619,13 +762,14 @@ fn generate_for_selection(
                     GenerationFailure {
                         request_id,
                         message: error.user_message(),
+                        context,
                     },
                 );
             }
         }
     });
 
-    Ok(started)
+    started
 }
 
 #[tauri::command]
@@ -635,6 +779,7 @@ fn read_screen(
     settings: State<SettingsStore>,
     generation_state: State<GenerationState>,
     image_store: State<ImageCaptureStore>,
+    conversation: State<ConversationState>,
     request: ReadScreenRequest,
 ) -> Result<GenerationStarted, String> {
     let installing = install
@@ -657,8 +802,20 @@ fn read_screen(
     let model = snapshot.config.ocr_model;
     let model_for_error = model.clone();
 
+    let mut session = conversation
+        .0
+        .lock()
+        .map_err(|_| "Conversation is unavailable.")?;
+    if session.reset(request.conversation_id) {
+        generation_state.cancel();
+    }
+    session.ensure_current(request.conversation_id)?;
     let (request_id, cancellation) = generation_state.begin();
-    let started = GenerationStarted { request_id };
+    drop(session);
+    let started = GenerationStarted {
+        request_id,
+        context: None,
+    };
 
     let app_handle = app.clone();
     let state = (*generation_state).clone();
@@ -703,8 +860,9 @@ fn read_screen(
             Ok(()) => {
                 let _ = app_handle.emit(
                     SCREEN_READ_FAILED_EVENT,
-                    GenerationFailure {
+                    ScreenReadFailure {
                         request_id,
+                        image_id: request.image_id,
                         message: "The OCR model did not return readable text. Try a smaller region or another OCR model.".into(),
                     },
                 );
@@ -717,8 +875,9 @@ fn read_screen(
             {
                 let _ = app_handle.emit(
                     SCREEN_READ_FAILED_EVENT,
-                    GenerationFailure {
+                    ScreenReadFailure {
                         request_id,
+                        image_id: request.image_id,
                         message: format!(
                             "The OCR model '{model_for_error}' is not installed. Run `ollama pull {model_for_error}`, or choose another OCR model in Settings."
                         ),
@@ -728,8 +887,9 @@ fn read_screen(
             Err(error) => {
                 let _ = app_handle.emit(
                     SCREEN_READ_FAILED_EVENT,
-                    GenerationFailure {
+                    ScreenReadFailure {
                         request_id,
+                        image_id: request.image_id,
                         message: error.user_message(),
                     },
                 );
@@ -815,6 +975,7 @@ pub fn run() {
         .manage(RegionCaptureStore::default())
         .manage(ImageCaptureStore::default())
         .manage(GenerationState::default())
+        .manage(ConversationState::default())
         .manage(ShortcutBindings::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -863,10 +1024,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let updates = MenuItem::with_id(app, "updates", "Check for updates…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Snippet", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &settings, &updates, &quit])?;
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or_else(|| tauri::Error::AssetNotFound("application icon".into()))?;
+    let icon = tauri::include_image!("icons/tray.png");
 
     let _tray = TrayIconBuilder::with_id("snippet-tray")
         .icon(icon)
