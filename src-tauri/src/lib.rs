@@ -7,6 +7,7 @@ mod screen;
 mod search_credentials;
 mod selection;
 mod settings;
+pub mod timing;
 
 use std::{
     io,
@@ -784,6 +785,7 @@ fn generate_for_selection(
         research
             .map(research::SearchMode::Explicit)
             .or(automatic_search),
+        snapshot.config.web_search_enabled,
     ))
 }
 
@@ -832,6 +834,7 @@ fn continue_conversation(
         },
         request.identity,
         search,
+        snapshot.config.web_search_enabled,
     ))
 }
 
@@ -859,8 +862,12 @@ fn stream_conversation(
     mut request: GenerationRequest,
     identity: TurnIdentity,
     research: Option<research::SearchMode>,
+    web_search_enabled: bool,
 ) -> GenerationStarted {
+    crate::prompt::set_web_search_context(&mut request.messages, web_search_enabled);
     let (request_id, cancellation) = generation_state.begin();
+    let trace = timing::Trace::from_env(request_id, &request.model);
+    let provider = provider.with_trace(trace.clone());
     let context = Some(identity);
     let started = GenerationStarted {
         request_id,
@@ -874,6 +881,7 @@ fn stream_conversation(
         let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
         let research_app = app_handle.clone();
         let research_conversation = conversation.clone();
+        let provider_trace = trace.clone();
         let provider_task = tauri::async_runtime::spawn(async move {
             if let Some(mode) = research {
                 let progress =
@@ -915,11 +923,18 @@ fn stream_conversation(
                         }
                     };
                     progress("searching", Some(query.clone()), previous_sources.clone());
-                    let fresh = research::search(&query, api_key.as_deref(), &cancellation).await?;
+                    let fresh = research::search_traced(
+                        &query,
+                        api_key.as_deref(),
+                        &cancellation,
+                        &provider_trace,
+                    )
+                    .await?;
                     let sources = research::merge_sources(&previous_sources, fresh);
                     if cancellation.is_cancelled() {
                         return Err(ProviderError::Cancelled);
                     }
+                    let grounding = provider_trace.span("attach_evidence");
                     research::ground(&mut request.messages, &sources[previous_sources.len()..]);
                     research_conversation
                         .0
@@ -929,8 +944,10 @@ fn stream_conversation(
                         })?
                         .ground_pending(identity, request.messages.clone(), sources.clone())
                         .map_err(ProviderError::RequestFailed)?;
+                    grounding.finish();
                     progress("summarizing", Some(query), sources);
                 } else {
+                    provider_trace.mark("search_skipped", serde_json::json!({}));
                     progress("answering", None, previous_sources);
                     request.messages[0].content.push_str(" No new web search was performed for this turn. Answer from the provided context and your knowledge; do not claim to have searched or checked current sources.");
                 }
@@ -941,6 +958,7 @@ fn stream_conversation(
         });
 
         let mut response = String::new();
+        let mut first_delta = true;
         while let Some(event) = event_receiver.recv().await {
             if !state.is_active(request_id) {
                 break;
@@ -949,7 +967,7 @@ fn stream_conversation(
             match event {
                 GenerationEvent::Delta(delta) => {
                     response.push_str(&delta);
-                    let _ = app_handle.emit(
+                    let dispatched = app_handle.emit(
                         GENERATION_CHUNK_EVENT,
                         GenerationChunk {
                             request_id,
@@ -957,6 +975,10 @@ fn stream_conversation(
                             context,
                         },
                     );
+                    if first_delta && dispatched.is_ok() {
+                        trace.mark("first_content_forwarded_to_ui", serde_json::json!({}));
+                        first_delta = false;
+                    }
                 }
             }
         }
@@ -966,6 +988,7 @@ fn stream_conversation(
             Err(error) => Err(ProviderError::RequestFailed(error.to_string())),
         };
         if !state.finish(request_id) {
+            trace.finish("superseded");
             return;
         }
         if result.is_ok() && response.trim().is_empty() {
@@ -973,6 +996,11 @@ fn stream_conversation(
                 "Empty assistant response".into(),
             ));
         }
+        trace.finish(match &result {
+            Ok(()) => "complete",
+            Err(ProviderError::Cancelled) => "cancelled",
+            Err(_) => "error",
+        });
         let Ok(mut session) = conversation.0.lock() else {
             return;
         };

@@ -104,8 +104,10 @@ vision support to use this workflow.
 ## Web research
 
 Type a question such as "Research restaurants in Santa Clara" and send it.
-Your Ollama model decides whether a search would help and creates the query in
-one planning step. With selected text, choose **Research** to always search,
+Your Ollama model checks whether the task needs external information and creates
+its query in one planning step. Ordinary explanations, writing tasks, and questions
+about Snippet's capabilities are answered directly; current facts and requests to
+look something up can trigger search. With selected text, choose **Research** to always search,
 skipping that decision. Explain, Summarize, and Refine remain local actions.
 
 Snippet searches You.com and streams an answer with numbered citations. Sources
@@ -201,6 +203,9 @@ npm run tauri dev
 See the [development guide](docs/development.md) for prerequisites, architecture,
 configuration, and checks. The [release guide](docs/releases.md) covers signing
 and publishing Windows installers.
+
+See [benchmarking](docs/benchmarking.md) to measure search planning, web retrieval,
+model loading, time to first answer text, and generation speed, or trace app requests.
 
 Issues and contributions are welcome. Keep changes focused and include relevant
 validation when changing capture, OCR, or conversation behavior.

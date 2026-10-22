@@ -1118,7 +1118,7 @@ function App() {
                 )}
                 {selection && (settings?.config.webSearchEnabled ?? true) && <button
                   type="button"
-                  title="Search You.com and summarize with Ollama. Your search query is sent to You.com."
+                  title="Search the web and summarize with Ollama."
                   className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-sm font-normal text-zinc-300 transition-colors hover:bg-zinc-600 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
                   onClick={() => void startGeneration({ kind: "research", instruction: customInstruction.trim() })}
                 >Research</button>}
@@ -1252,7 +1252,7 @@ function App() {
                     checked={settingsDraft?.webSearchEnabled ?? true}
                     onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, webSearchEnabled: event.target.checked }))} />
                 </label>
-                <p className="mt-2 text-xs leading-5 text-zinc-400">Ollama can search You.com when helpful. Research always searches. Free access is limited; no account needed.</p>
+                <p className="mt-2 text-xs leading-5 text-zinc-400">Ollama can search the web when helpful.</p>
                 <label className="mt-4 block text-xs font-medium text-zinc-400">You.com API key (optional)
                   <input type="password" autoComplete="off" aria-label="You.com API key"
                     className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
