@@ -21,6 +21,7 @@ pub enum QuickAction {
 pub enum PromptIntent {
     QuickAction { action: QuickAction },
     Custom { instruction: String },
+    Research { instruction: String },
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -130,6 +131,9 @@ fn instruction_for(intent: &PromptIntent, has_image: bool) -> Result<String, Pro
             }
         }
         .into()),
+        PromptIntent::Research { instruction } => {
+            Ok(format!("Research the topic using the supplied web evidence. Summarize the findings and cite supporting sources as [1], [2], etc. {}", instruction.trim()))
+        }
         PromptIntent::Custom { instruction } => {
             let trimmed = instruction.trim();
             if trimmed.is_empty() {
@@ -183,6 +187,24 @@ mod tests {
             intent,
             context: None,
         }
+    }
+
+    #[test]
+    fn research_accepts_a_typed_question_and_keeps_the_task_separate_from_reference() {
+        let messages = PromptBuilder::build(PromptRequest {
+            selected_text: None,
+            has_image: false,
+            intent: PromptIntent::Research {
+                instruction: "Compare Windows OCR and GLM-OCR".into(),
+            },
+            context: None,
+        })
+        .unwrap();
+        assert!(messages[1]
+            .content
+            .contains("Compare Windows OCR and GLM-OCR"));
+        assert!(messages[1].content.contains("cite supporting sources"));
+        assert!(messages[0].content.contains("untrusted reference material"));
     }
 
     #[test]

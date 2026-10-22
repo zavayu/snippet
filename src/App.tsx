@@ -1,3 +1,4 @@
+import type { ResearchInfo } from "./research";
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -85,7 +86,8 @@ type PopupOpenedEvent = {
 
 type PromptIntent =
   | { kind: "quick-action"; action: QuickAction }
-  | { kind: "custom"; instruction: string };
+  | { kind: "custom"; instruction: string }
+  | { kind: "research"; instruction: string };
 
 type ChatMessage = {
   role: "system" | "user";
@@ -103,6 +105,7 @@ type AppConfig = {
   visionEnabled: boolean;
   hasCompletedOnboarding: boolean;
   automaticUpdates: boolean;
+  webSearchEnabled: boolean;
   shortcuts: ShortcutConfig;
 };
 
@@ -110,6 +113,7 @@ type SettingsSnapshot = {
   config: AppConfig;
   effectiveModel: string | null;
   modelSource: "settings" | "environment" | "none";
+  hasSearchApiKey: boolean;
 };
 
 type ModelInfo = {
@@ -140,7 +144,7 @@ type ScreenReadFinished = {
   text: string;
 };
 
-type SettingsPage = "general" | "ocr" | "shortcuts" | "updates";
+type SettingsPage = "general" | "ocr" | "search" | "shortcuts" | "updates";
 type ShortcutKey = keyof ShortcutConfig;
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
@@ -218,6 +222,7 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [onboardingStartAtLogin, setOnboardingStartAtLogin] = useState(true);
+  const [searchKeyDraft, setSearchKeyDraft] = useState("");
   const [settingsPage, setSettingsPage] = useState<SettingsPage>("general");
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutKey | null>(null);
   const [isSettingsLoading, setIsSettingsLoading] = useState(true);
@@ -234,6 +239,7 @@ function App() {
   const [isPopupSurfaceVisible, setIsPopupSurfaceVisible] = useState(false);
   const [popupOpenSequence, setPopupOpenSequence] = useState(0);
   const popupContentRef = useRef<HTMLDivElement>(null);
+  const [sourcesLayoutRevision, setSourcesLayoutRevision] = useState(0);
   const popupPositionRequestRef = useRef<{ cursor: Promise<PhysicalPosition | null> } | null>(null);
   const popupSelectionBoundsRef = useRef<SelectionBounds | null>(null);
   const lastIntentRef = useRef<PromptIntent | null>(null);
@@ -453,6 +459,9 @@ function App() {
       listen<GenerationStarted>("generation-started", (event) => {
         dispatchConversation({ type: "started", event: event.payload });
       }),
+      listen<GenerationEvent & ResearchInfo>("research-status", (event) => {
+        dispatchConversation({ type: "research", event: event.payload, research: event.payload });
+      }),
       listen<GenerationChunk>("generation-chunk", (event) => {
         dispatchConversation({ type: "chunk", event: event.payload, delta: event.payload.delta });
       }),
@@ -599,6 +608,7 @@ function App() {
     };
   }, [
     popupOpenSequence,
+    sourcesLayoutRevision,
     conversation,
     captureState,
     captureNotice,
@@ -616,6 +626,7 @@ function App() {
     isSettingsLoading,
     settingsPage,
     settingsDraft?.ocrEngine,
+    settings?.hasSearchApiKey,
     promptPreview,
     promptPreviewError,
     providerStatus,
@@ -655,13 +666,14 @@ function App() {
 
     const intent = resolveIntent(intentOverride);
     const activeSelection = selectionOverride ?? selection;
-    const activeImage = selectionOverride ? null : image;
-    if (!activeSelection && !activeImage && intent.kind !== "custom") {
+    const activeImage = selectionOverride || intent.kind === "research" ? null : image;
+    if (!activeSelection && !activeImage && intent.kind === "quick-action") {
       return;
     }
 
     lastIntentRef.current = intent;
-    const prompt = intent.kind === "custom" ? intent.instruction : QUICK_ACTION_LABELS[intent.action];
+    const prompt = intent.kind === "research" ? `Research${intent.instruction.trim() ? `: ${intent.instruction.trim()}` : ""}`
+      : intent.kind === "custom" ? intent.instruction : QUICK_ACTION_LABELS[intent.action];
     await submitTurn("initial", prompt, {
       selectedText: activeSelection?.text ?? null,
       imageId: activeImage?.imageId ?? null,
@@ -721,6 +733,17 @@ function App() {
     } finally {
       setIsPromptPreviewLoading(false);
     }
+  };
+
+  const saveSearchKey = async (key: string | null) => {
+    setIsSettingsLoading(true);
+    try {
+      const snapshot = await invoke<SettingsSnapshot>("save_search_api_key", { key });
+      setSettings(snapshot);
+      setSearchKeyDraft("");
+      setSettingsError(null);
+    } catch (error) { setSettingsError(errorText(error)); }
+    finally { setIsSettingsLoading(false); }
   };
 
   const saveSettings = async () => {
@@ -925,7 +948,7 @@ function App() {
                   <path d="M20 12a8 8 0 0 0-8-8" className="stroke-zinc-400" strokeLinecap="round" strokeWidth="2.5" />
                 </svg>
                 <span data-tauri-drag-region className="truncate px-1 py-2 text-[17px] italic text-zinc-400">
-                  {generationState === "loading" ? "Thinking…" : "Responding…"}
+                  {generationState === "loading" ? currentTurn?.research?.phase === "planning" ? "Preparing search..." : currentTurn?.research?.phase === "searching" ? "Searching..." : currentTurn?.research?.phase === "summarizing" ? "Summarizing..." : "Thinking..." : "Responding..."}
                 </span>
               </div>
             )}
@@ -1093,6 +1116,12 @@ function App() {
                     {image.source === "region" ? "Read region" : "Read screen"}
                   </button>
                 )}
+                {selection && (settings?.config.webSearchEnabled ?? true) && <button
+                  type="button"
+                  title="Search You.com and summarize with Ollama. Your search query is sent to You.com."
+                  className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-sm font-normal text-zinc-300 transition-colors hover:bg-zinc-600 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  onClick={() => void startGeneration({ kind: "research", instruction: customInstruction.trim() })}
+                >Research</button>}
                 {(selection || image || ocrState === "reading") && QUICK_ACTIONS.map((action) => (
                   <button
                     key={action}
@@ -1144,8 +1173,8 @@ function App() {
                 </section>
               )}
               <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-zinc-200">{settingsPage === "updates" ? "Updates" : "Local AI"}</p>
-                {settingsPage !== "updates" && <button
+                <p className="text-sm font-semibold text-zinc-200">{settingsPage === "updates" ? "Updates" : settingsPage === "search" ? "Web search" : "Local AI"}</p>
+                {settingsPage !== "updates" && settingsPage !== "search" && <button
                   type="button"
                   className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-100"
                   onClick={() => void refreshProviderStatus()}
@@ -1158,6 +1187,7 @@ function App() {
                 {([
                   ["general", "General"],
                   ["ocr", "Read screen"],
+                  ["search", "Web search"],
                   ["shortcuts", "Shortcuts"],
                   ["updates", "Updates"],
                 ] as const).map(([page, label]) => (
@@ -1214,6 +1244,27 @@ function App() {
               </label>
                 </>
               )}
+
+              {settingsPage === "search" && <>
+                <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
+                  <span className="text-sm text-zinc-200">Enable web search</span>
+                  <input aria-label="Enable web search" type="checkbox" className="accent-violet-400"
+                    checked={settingsDraft?.webSearchEnabled ?? true}
+                    onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, webSearchEnabled: event.target.checked }))} />
+                </label>
+                <p className="mt-2 text-xs leading-5 text-zinc-400">Ollama can search You.com when helpful. Research always searches. Free access is limited; no account needed.</p>
+                <label className="mt-4 block text-xs font-medium text-zinc-400">You.com API key (optional)
+                  <input type="password" autoComplete="off" aria-label="You.com API key"
+                    className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
+                    value={searchKeyDraft} onChange={(event) => setSearchKeyDraft(event.target.value)}
+                    placeholder={settings?.hasSearchApiKey ? "Key saved securely" : "Use free search"} />
+                </label>
+                <p className="mt-1 text-xs text-zinc-500">Optional keys use your You.com credits.</p>
+                <div className="mt-2 flex gap-3 text-xs">
+                  <button type="button" title="Save securely in Windows Credential Manager and apply immediately" className="text-violet-300 disabled:opacity-40" disabled={isSettingsLoading || !searchKeyDraft.trim()} onClick={() => void saveSearchKey(searchKeyDraft)}>Save key</button>
+                  {settings?.hasSearchApiKey && <button type="button" className="text-zinc-400 disabled:opacity-40" disabled={isSettingsLoading} onClick={() => void saveSearchKey(null)}>Remove key</button>}
+                </div>
+              </>}
 
               {settingsPage === "ocr" && (
                 <>
@@ -1403,7 +1454,7 @@ function App() {
                   `SNIPPET_OLLAMA_MODEL` is overriding the saved model.
                 </p>
               )}
-              {settingsPage !== "updates" && providerStatus && (
+              {settingsPage === "general" && providerStatus && (
                 <p className="mt-3 text-xs text-zinc-400">
                   {providerStatus.state === "ready" && "Ollama is ready."}
                   {providerStatus.state === "unavailable" && providerStatus.message}
@@ -1431,6 +1482,7 @@ function App() {
 
           {!isSettingsOpen && hasSubmittedPrompt && (
             <ConversationPanel
+              onLayoutChange={() => setSourcesLayoutRevision((revision) => revision + 1)}
               conversation={conversation}
               replacementId={selection?.editability === "editable" && !selection.truncated ? selection.replacementId : null}
               onReplacementUsed={(id) => setSelection((current) => current?.replacementId === id ? { ...current, replacementId: null } : current)}

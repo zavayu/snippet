@@ -35,6 +35,8 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 | `src/popupPosition.ts` | Selection anchors, monitor boundaries, and display scaling |
 | `src-tauri/src/selection.rs` and `selection/` | Accessibility capture, copy fallback, editability checks, and replacement |
 | `src-tauri/src/screen.rs` | In-memory monitor capture, region cropping, and image encoding |
+| `src-tauri/src/research.rs` | You.com retrieval, source normalization, and research grounding |
+| `src-tauri/src/search_credentials.rs` | Windows Credential Manager API key storage |
 | `src-tauri/src/ocr.rs` | Native Windows OCR |
 | `src-tauri/src/prompt.rs` | Provider-neutral prompt construction |
 | `src-tauri/src/provider/` | Provider contract and Ollama HTTP streaming |
@@ -64,6 +66,7 @@ The UI manages this file. Relevant settings include:
   "ocrModel": "glm-ocr:latest",
   "ocrNumPredict": 2048,
   "ocrNumCtx": 16384,
+  "webSearchEnabled": true,
   "thinking": false,
   "visionEnabled": false
 }
@@ -112,3 +115,48 @@ proxy is not evidence that the canvas document is editable. Replacement requires
 a complete selection, confirmed editability, and a stable focused-control
 identity. One-use tokens bind the original window, control, and selected text;
 replacement rechecks those conditions before inserting a response.
+
+## Research pipeline
+
+Search is guarded by `webSearchEnabled` (default true) on frontend and backend.
+Explicit Research creates a bounded JSON query without a search decision.
+Custom instructions and follow-ups use one local structured-output planning call
+to return either `search: false, query: null` or `search: true` with a bounded query.
+Quick actions and disabled web search bypass planning. Thinking is disabled for
+both planners. The automatic planner receives the current instruction separately
+from untrusted reference text and bounded history, without image payloads.
+Only the generated query is sent to You.com.
+
+Without a saved key, the Rust client initializes the hosted free MCP endpoint and
+calls `you-search`. With a key, it calls the REST Search API directly. Retrieval
+uses at most five normalized HTTP(S) sources with bounded excerpts. Responses are
+size-limited; JSON and SSE RPC results are supported. Search is cancellable, and
+provider errors never turn into an ungrounded answer or a paid fallback.
+
+The summary uses the existing Ollama stream. Retrieved text is marked as untrusted
+evidence and retained only with successful conversation turns. Follow-up searches
+allocate source IDs after the previous maximum so earlier citations remain valid.
+Cancelled and failed turns discard their new evidence. Invalid planning output
+is an explicit error, and cancellation covers planning and retrieval. The frontend maps
+numeric citations to known sources, suppresses unrecognized research links and
+remote images, and includes source URLs when copying a research response.
+
+API keys are written through a separate command to Windows Credential Manager.
+Settings snapshots expose only whether a key exists. Never add keys to the JSON
+configuration, frontend defaults, logs, fixtures, or repository.
+
+HTTP integration tests use local mock servers for the MCP handshake, SSE handling,
+keyed search, and direct/automatic query planning. The optional local routing test
+uses `SNIPPET_TEST_MODEL` with a running Ollama server and makes no web requests:
+
+```powershell
+$env:SNIPPET_TEST_MODEL = "your-installed-chat-model"
+cargo test --manifest-path src-tauri/Cargo.toml live_local_search_routing_smoke -- --ignored --nocapture
+```
+
+A live search smoke test is ignored by default because
+it needs network access and consumes a free search:
+
+```powershell
+cargo test --manifest-path src-tauri/Cargo.toml live_free_search_smoke -- --ignored
+```

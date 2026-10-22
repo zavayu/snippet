@@ -2,7 +2,9 @@ mod conversation;
 mod ocr;
 pub mod prompt;
 pub mod provider;
+mod research;
 mod screen;
+mod search_credentials;
 mod selection;
 mod settings;
 
@@ -447,6 +449,16 @@ struct GenerationChunk {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ResearchStatus {
+    request_id: u64,
+    context: TurnIdentity,
+    phase: String,
+    query: Option<String>,
+    sources: Vec<research::Source>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GenerationFinished {
     request_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -512,6 +524,7 @@ macro_rules! snippet_command_handler {
             release_update_install,
             get_settings,
             save_settings,
+            save_search_api_key,
             get_provider_status,
             generate_for_selection,
             continue_conversation,
@@ -537,6 +550,7 @@ macro_rules! snippet_command_handler {
             release_update_install,
             get_settings,
             save_settings,
+            save_search_api_key,
             get_provider_status,
             generate_for_selection,
             continue_conversation,
@@ -606,6 +620,15 @@ fn get_settings(settings: State<SettingsStore>) -> Result<SettingsSnapshot, Stri
 }
 
 #[tauri::command]
+fn save_search_api_key(
+    key: Option<String>,
+    settings: State<SettingsStore>,
+) -> Result<SettingsSnapshot, String> {
+    search_credentials::write(key)?;
+    settings.snapshot().map_err(|error| error.user_message())
+}
+
+#[tauri::command]
 fn save_settings(
     app: AppHandle,
     settings: State<SettingsStore>,
@@ -669,6 +692,42 @@ fn generate_for_selection(
     if request.image_id.is_some() && !snapshot.config.vision_enabled {
         return Err("Enable image input in Settings before analyzing a screen capture.".into());
     }
+    let research = if let crate::prompt::PromptIntent::Research { instruction } = &request.intent {
+        if !snapshot.config.web_search_enabled {
+            return Err(
+                "Web search is disabled. Enable it in Settings > Web search to use Research."
+                    .into(),
+            );
+        }
+        if request.image_id.is_some() {
+            return Err(
+                "Research needs text. Use Read screen first, or type a research question.".into(),
+            );
+        }
+        let topic = research::bounded(request.selected_text.as_deref().unwrap_or_default(), 3000);
+        let instruction = research::bounded(instruction, 1000);
+        if topic.trim().is_empty() && instruction.trim().is_empty() {
+            return Err("Select text or enter a research question.".into());
+        }
+        Some(research::ResearchPlan {
+            topic,
+            instruction,
+            api_key: search_credentials::read()?,
+        })
+    } else {
+        None
+    };
+    let automatic_search =
+        if let crate::prompt::PromptIntent::Custom { instruction } = &request.intent {
+            research::SearchMode::automatic(
+                snapshot.config.web_search_enabled,
+                instruction,
+                request.selected_text.as_deref().unwrap_or_default(),
+                Vec::new(),
+            )
+        } else {
+            None
+        };
     let image = request
         .image_id
         .map(|image_id| {
@@ -678,9 +737,17 @@ fn generate_for_selection(
         })
         .transpose()?;
     let mut messages = PromptBuilder::build(PromptRequest {
-        selected_text: request.selected_text,
+        selected_text: research
+            .as_ref()
+            .map(|plan| plan.topic.clone())
+            .or(request.selected_text),
         has_image: image.is_some(),
-        intent: request.intent,
+        intent: research
+            .as_ref()
+            .map(|plan| crate::prompt::PromptIntent::Research {
+                instruction: plan.instruction.clone(),
+            })
+            .unwrap_or(request.intent),
         context: None,
     })
     .map_err(|error| error.user_message())?;
@@ -714,6 +781,9 @@ fn generate_for_selection(
             thinking: snapshot.config.thinking,
         },
         request.identity,
+        research
+            .map(research::SearchMode::Explicit)
+            .or(automatic_search),
     ))
 }
 
@@ -743,6 +813,12 @@ fn continue_conversation(
         .0
         .lock()
         .map_err(|_| "Conversation is unavailable.")?;
+    let search = research::SearchMode::automatic(
+        snapshot.config.web_search_enabled,
+        &request.instruction,
+        "",
+        session.sources(),
+    );
     let messages = session.begin(request.identity, None, Some(request.instruction))?;
     Ok(stream_conversation(
         app,
@@ -755,6 +831,7 @@ fn continue_conversation(
             thinking: snapshot.config.thinking,
         },
         request.identity,
+        search,
     ))
 }
 
@@ -779,8 +856,9 @@ fn stream_conversation(
     generation_state: GenerationState,
     conversation: ConversationState,
     provider: OllamaProvider,
-    request: GenerationRequest,
+    mut request: GenerationRequest,
     identity: TurnIdentity,
+    research: Option<research::SearchMode>,
 ) -> GenerationStarted {
     let (request_id, cancellation) = generation_state.begin();
     let context = Some(identity);
@@ -794,7 +872,69 @@ fn stream_conversation(
     let state = generation_state;
     tauri::async_runtime::spawn(async move {
         let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let research_app = app_handle.clone();
+        let research_conversation = conversation.clone();
         let provider_task = tauri::async_runtime::spawn(async move {
+            if let Some(mode) = research {
+                let progress =
+                    |phase: &str, query: Option<String>, sources: Vec<research::Source>| {
+                        let _ = research_app.emit(
+                            "research-status",
+                            ResearchStatus {
+                                request_id,
+                                context: identity,
+                                phase: phase.into(),
+                                query,
+                                sources,
+                            },
+                        );
+                    };
+                let previous_sources = mode.previous_sources().to_vec();
+                let automatic = matches!(&mode, research::SearchMode::Automatic { .. });
+                progress(
+                    if automatic { "deciding" } else { "planning" },
+                    None,
+                    previous_sources.clone(),
+                );
+                let query = research::plan_search(
+                    &provider,
+                    &request.model,
+                    &mode,
+                    &request.messages,
+                    &cancellation,
+                )
+                .await?;
+                if cancellation.is_cancelled() {
+                    return Err(ProviderError::Cancelled);
+                }
+                if let Some(query) = query {
+                    let api_key = match &mode {
+                        research::SearchMode::Explicit(plan) => plan.api_key.clone(),
+                        research::SearchMode::Automatic { .. } => {
+                            search_credentials::read().map_err(ProviderError::RequestFailed)?
+                        }
+                    };
+                    progress("searching", Some(query.clone()), previous_sources.clone());
+                    let fresh = research::search(&query, api_key.as_deref(), &cancellation).await?;
+                    let sources = research::merge_sources(&previous_sources, fresh);
+                    if cancellation.is_cancelled() {
+                        return Err(ProviderError::Cancelled);
+                    }
+                    research::ground(&mut request.messages, &sources[previous_sources.len()..]);
+                    research_conversation
+                        .0
+                        .lock()
+                        .map_err(|_| {
+                            ProviderError::RequestFailed("Conversation is unavailable.".into())
+                        })?
+                        .ground_pending(identity, request.messages.clone(), sources.clone())
+                        .map_err(ProviderError::RequestFailed)?;
+                    progress("summarizing", Some(query), sources);
+                } else {
+                    progress("answering", None, previous_sources);
+                    request.messages[0].content.push_str(" No new web search was performed for this turn. Answer from the provided context and your knowledge; do not claim to have searched or checked current sources.");
+                }
+            }
             provider
                 .stream_generation(request, cancellation, event_sender)
                 .await

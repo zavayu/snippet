@@ -1,3 +1,4 @@
+import type { ResearchInfo } from "./research";
 export type TurnIdentity = { conversationId: number; turnId: number };
 export type GenerationEvent = {
   requestId: number;
@@ -12,6 +13,7 @@ export type ChatTurn = {
   status: "loading" | "streaming" | "complete" | "stopped" | "error";
   requestId?: number;
   error?: string;
+  research?: ResearchInfo;
 };
 export type ConversationState = {
   conversationId: number;
@@ -23,6 +25,7 @@ export type ConversationAction =
   | { type: "expand" }
   | { type: "submit"; identity: TurnIdentity; prompt: string; reference?: string; kind: ChatTurn["kind"]; retry?: boolean }
   | { type: "started" | "complete" | "stopped"; event: GenerationEvent }
+  | { type: "research"; event: GenerationEvent; research: ResearchInfo }
   | { type: "chunk"; event: GenerationEvent; delta: string }
   | { type: "error"; identity: TurnIdentity; message: string };
 
@@ -35,16 +38,22 @@ export function conversationReducer(state: ConversationState, action: Conversati
   if (action.type === "submit") {
     if (action.identity.conversationId !== state.conversationId || (last && isTurnActive(last))) return state;
     const turns = action.retry ? state.turns.slice(0, -1) : state.turns;
+    const retainedResearch = [...turns].reverse().find((turn) => turn.status === "complete")?.research;
     return { ...state, turns: [...turns, {
       id: action.identity.turnId, prompt: action.prompt, reference: action.reference,
       kind: action.kind, response: "", status: "loading",
+      research: action.kind === "follow-up" && retainedResearch ? { ...retainedResearch, phase: "answering" } : undefined,
     }] };
   }
   const identity = action.type === "error" ? action.identity : action.event.context;
   if (!identity || identity.conversationId !== state.conversationId || identity.turnId !== last?.id || !isTurnActive(last)) return state;
   let updated = last;
   if (action.type === "error") updated = { ...last, status: "error", error: action.message };
-  else if (action.type === "started") {
+  else if (action.type === "research") {
+    if (last.requestId !== undefined && last.requestId !== action.event.requestId) return state;
+    updated = { ...last, requestId: action.event.requestId,
+      research: action.research.phase === "answering" && !action.research.sources.length ? undefined : action.research };
+  } else if (action.type === "started") {
     if (last.requestId !== undefined && last.requestId !== action.event.requestId) return state;
     updated = { ...last, requestId: action.event.requestId };
   } else {

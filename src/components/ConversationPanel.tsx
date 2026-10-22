@@ -1,6 +1,8 @@
+import { responseWithSources } from "../research";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isTurnActive, type ConversationState } from "../conversation";
+import { WebLink } from "./WebLink";
 import { MarkdownResponse } from "./MarkdownResponse";
 
 function ResponseAction({ label, onClick, children }: {
@@ -48,9 +50,10 @@ type Props = {
   onStop: () => void;
   replacementId: number | null;
   onReplacementUsed: (id: number) => void;
+  onLayoutChange?: () => void;
 };
 
-export function ConversationPanel({ conversation, onContinue, onNewConversation, onSubmit, onRetry, onStop, replacementId, onReplacementUsed }: Props) {
+export function ConversationPanel({ conversation, onContinue, onNewConversation, onSubmit, onRetry, onStop, replacementId, onReplacementUsed, onLayoutChange }: Props) {
   const [draft, setDraft] = useState("");
   const [replacing, setReplacing] = useState(false);
   const [replaceError, setReplaceError] = useState<string | null>(null);
@@ -112,20 +115,29 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
           {turn.reference && <p className="mt-1 text-xs text-zinc-500">{turn.reference}</p>}
         </div>}
         {conversation.expanded && <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Snippet</p>}
-        {turn.response && <MarkdownResponse content={turn.response} />}
-        {conversation.expanded && turn.status === "loading" && <p className="text-xs text-zinc-500">Thinking…</p>}
+        {turn.response && <MarkdownResponse content={turn.response} sources={turn.research?.sources} />}
+          {!isTurnActive(turn) && turn.research && turn.research.sources.length > 0 && <details className="mt-2 text-xs text-zinc-400" onToggle={onLayoutChange}>
+            <summary className="w-fit cursor-pointer rounded py-1 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-violet-400">Sources ({turn.research.sources.length}){turn.kind === "follow-up" && turn.research.phase === "answering" ? " from earlier research" : ""}</summary>
+            {turn.research.query && <p className="mt-1 break-words">Search: {turn.research.query}</p>}
+            <ol className="mt-2 space-y-1 pl-4">
+              {turn.research.sources.map((source) => <li key={source.id} className="break-words">
+                <WebLink href={source.url}>[{source.id}] {source.title}</WebLink>
+              </li>)}
+            </ol>
+          </details>}
+        {conversation.expanded && turn.status === "loading" && !turn.research && <p className="text-xs text-zinc-500">Thinking…</p>}
         {turn.status === "stopped" && <p className="mt-2 text-xs text-zinc-500">Response stopped. This turn is not included in follow-up context.</p>}
         {turn.status === "error" && <p role="alert" className="mt-2 text-xs text-amber-200">{turn.error}{turn.response && " This incomplete turn is not included in follow-up context."}</p>}
         {conversation.expanded && turn.response && !isTurnActive(turn) && <div className="flex items-center gap-1">
-          <CopyResponse text={turn.response} />
-          {!busy && turn.status === "complete" && replaceAction(turn.response)}
+          <CopyResponse text={responseWithSources(turn.response, turn.research?.sources)} />
+          {!busy && turn.status === "complete" && replaceAction(responseWithSources(turn.response, turn.research?.sources))}
         </div>}
       </article>)}
     </div>
 
     {(!conversation.expanded || (!busy && (last?.status === "error" || last?.status === "stopped"))) && <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-zinc-800 pt-2">
-      {!conversation.expanded && last?.response && !busy && <CopyResponse text={last.response} />}
-      {!conversation.expanded && last?.status === "complete" && replaceAction(last.response)}
+      {!conversation.expanded && last?.response && !busy && <CopyResponse text={responseWithSources(last.response, last.research?.sources)} />}
+      {!conversation.expanded && last?.status === "complete" && replaceAction(responseWithSources(last.response, last.research?.sources))}
       {!conversation.expanded && last?.status === "complete" && <ResponseAction label="Continue conversation" onClick={onContinue}>
         <path d="M8 18H5l-3 3V6a3 3 0 0 1 3-3h14a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H8Z" />
         <path d="M7 8h10M7 12h7" />

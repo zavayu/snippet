@@ -27,6 +27,10 @@ const fn default_automatic_updates() -> bool {
     true
 }
 
+const fn default_web_search_enabled() -> bool {
+    true
+}
+
 fn default_capture_screen_shortcut() -> String {
     "Ctrl+Shift+I".into()
 }
@@ -157,6 +161,8 @@ pub struct AppConfig {
     pub has_completed_onboarding: bool,
     #[serde(default = "default_automatic_updates")]
     pub automatic_updates: bool,
+    #[serde(default = "default_web_search_enabled")]
+    pub web_search_enabled: bool,
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
 }
@@ -174,6 +180,7 @@ impl Default for AppConfig {
             vision_enabled: false,
             has_completed_onboarding: false,
             automatic_updates: true,
+            web_search_enabled: true,
             shortcuts: ShortcutConfig::default(),
         }
     }
@@ -216,6 +223,7 @@ pub struct SettingsSnapshot {
     pub config: AppConfig,
     pub effective_model: Option<String>,
     pub model_source: ModelSource,
+    pub has_search_api_key: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -302,6 +310,7 @@ fn snapshot_for(config: AppConfig) -> SettingsSnapshot {
         config,
         effective_model,
         model_source,
+        has_search_api_key: crate::search_credentials::read().ok().flatten().is_some(),
     }
 }
 
@@ -346,6 +355,22 @@ mod tests {
     };
 
     #[test]
+    fn web_search_defaults_on_and_can_be_persistently_disabled_without_storing_secrets() {
+        let mut config: AppConfig =
+            serde_json::from_str(r#"{"ollamaBaseUrl":"http://localhost:11434","model":null}"#)
+                .unwrap();
+        assert!(config.web_search_enabled);
+        config.web_search_enabled = false;
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            !serde_json::from_str::<AppConfig>(&json)
+                .unwrap()
+                .web_search_enabled
+        );
+        assert!(!json.contains("apiKey"));
+    }
+
+    #[test]
     fn defaults_to_the_local_ollama_server() {
         let config = AppConfig::default();
         assert_eq!(config.ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
@@ -372,6 +397,7 @@ mod tests {
             vision_enabled: true,
             has_completed_onboarding: true,
             automatic_updates: true,
+            web_search_enabled: true,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -400,6 +426,7 @@ mod tests {
             vision_enabled: false,
             has_completed_onboarding: false,
             automatic_updates: true,
+            web_search_enabled: true,
             shortcuts: ShortcutConfig::default(),
         }
         .normalized()
@@ -463,6 +490,7 @@ mod tests {
         assert_eq!(config.ocr_model, DEFAULT_OCR_MODEL);
         assert!(!config.has_completed_onboarding);
         assert!(config.automatic_updates);
+        assert!(config.web_search_enabled);
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub struct TurnIdentity {
 struct PendingTurn {
     identity: TurnIdentity,
     messages: Vec<ChatMessage>,
+    sources: Vec<crate::research::Source>,
 }
 
 #[derive(Default)]
@@ -24,6 +25,7 @@ pub struct Conversation {
     id: u64,
     messages: Vec<ChatMessage>,
     pending: Option<PendingTurn>,
+    sources: Vec<crate::research::Source>,
 }
 
 impl Conversation {
@@ -42,6 +44,7 @@ impl Conversation {
         self.id = id;
         self.messages.clear();
         self.pending = None;
+        self.sources.clear();
         true
     }
 
@@ -99,8 +102,39 @@ impl Conversation {
         self.pending = Some(PendingTurn {
             identity,
             messages: messages.clone(),
+            sources: self.sources.clone(),
         });
         Ok(messages)
+    }
+
+    /// Retain fetched evidence with the pending turn so follow-ups share its sources.
+    pub fn ground_pending(
+        &mut self,
+        identity: TurnIdentity,
+        messages: Vec<ChatMessage>,
+        sources: Vec<crate::research::Source>,
+    ) -> Result<(), String> {
+        self.ensure_current(identity.conversation_id)?;
+        if messages
+            .iter()
+            .map(|message| message.content.len())
+            .sum::<usize>()
+            > MAX_CONTEXT_BYTES
+        {
+            return Err("Research context is too large. Try a shorter selection.".into());
+        }
+        let pending = self
+            .pending
+            .as_mut()
+            .filter(|pending| pending.identity == identity)
+            .ok_or("This research request has been replaced.")?;
+        pending.messages = messages;
+        pending.sources = sources;
+        Ok(())
+    }
+
+    pub fn sources(&self) -> Vec<crate::research::Source> {
+        self.sources.clone()
     }
 
     pub fn finish(&mut self, identity: TurnIdentity, response: Option<String>) -> bool {
@@ -119,6 +153,7 @@ impl Conversation {
                 images: None,
             });
             self.messages = pending.messages;
+            self.sources = pending.sources;
         }
         true
     }
@@ -148,6 +183,51 @@ mod tests {
         .unwrap();
         messages[1].images = Some(vec!["original-image".into()]);
         messages
+    }
+
+    #[test]
+    fn research_evidence_is_retained_only_for_the_current_successful_turn() {
+        let mut session = Conversation::default();
+        session.reset(1);
+        let id = identity(1, 1);
+        let mut messages = session.begin(id, Some(initial()), None).unwrap();
+        messages[1].content.push_str(" Retrieved source evidence.");
+        assert!(session
+            .ground_pending(identity(1, 2), messages.clone(), Vec::new())
+            .is_err());
+        let sources = vec![crate::research::Source {
+            id: 1,
+            title: "First".into(),
+            url: "https://example.com/".into(),
+            excerpt: "Evidence".into(),
+            published_at: None,
+        }];
+        session
+            .ground_pending(id, messages, sources.clone())
+            .unwrap();
+        assert!(session.sources().is_empty());
+        session.finish(id, Some("Answer [1]".into()));
+        assert_eq!(session.sources(), sources);
+        let follow_up = session
+            .begin(identity(1, 2), None, Some("Compare that".into()))
+            .unwrap();
+        assert!(follow_up[1].content.contains("Retrieved source evidence"));
+        session
+            .ground_pending(
+                identity(1, 2),
+                follow_up,
+                vec![crate::research::Source {
+                    id: 2,
+                    title: "Discarded".into(),
+                    ..sources[0].clone()
+                }],
+            )
+            .unwrap();
+        session.finish(identity(1, 2), None);
+        assert_eq!(session.sources(), sources);
+        session.reset(2);
+        assert!(session.sources().is_empty());
+        assert!(session.ground_pending(id, initial(), Vec::new()).is_err());
     }
 
     #[test]

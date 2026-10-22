@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.5.0
+## Unreleased
+
+### Added
+
+- Research quick action with free You.com web search and Ollama summaries.
+- Automatic search planning for normal prompts and follow-ups; explicit Research
+  bypasses the decision, and disabling web search skips planning entirely.
+- Search query and source display, clickable citations, and source URLs in copied
+  responses; follow-ups retain the original research evidence.
+- Web search settings enabled by default, with an optional API key stored in
+  Windows Credential Manager and explicit handling of provider errors and limits.
+
 
 ### Fixed
 
