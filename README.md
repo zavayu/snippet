@@ -31,8 +31,8 @@ of you without breaking your flow.
   screenshot of the monitor under your cursor for a vision-capable Ollama model.
 - **Region capture** — press `Ctrl + Shift + G`, then drag over the part of the
   screen you want Snippet to analyze.
-- **Read screen** — extract text, tables, code, and math from a capture with a
-  local OCR model before reasoning about it.
+- **Read screen** — extract text from a capture with Windows OCR, or use an Ollama
+  OCR model for Markdown, tables, code, and math before reasoning about it.
 - **Local Ollama inference** — send prompts to a model running on your machine.
 - **Streaming responses** — see the answer as it is generated.
 - **Follow-up conversations** - expand an answer into a conversation while
@@ -178,6 +178,7 @@ The file contains the Ollama address and selected model:
 {
   "ollamaBaseUrl": "http://localhost:11434",
   "model": "your-model-name",
+  "ocrEngine": "windows",
   "ocrModel": "glm-ocr:latest",
   "ocrNumPredict": 2048,
   "ocrNumCtx": 16384,
@@ -195,9 +196,18 @@ extract the capture in the background, and use the result as selected text
 once it is ready. A prompt or text action chosen while OCR is running is sent
 automatically after extraction completes. Configure any shortcut by clicking
 its value in Settings and pressing the desired key combination.
-Read screen uses `glm-ocr:latest` by default and can be changed in Settings.
-Install the default model with `ollama pull glm-ocr:latest`.
-Its output and context limits are available under Settings → Read screen.
+Read screen uses Windows OCR by default, locally and without Ollama. It uses
+installed Windows OCR language packs, preferring your Windows language settings.
+If no recognizer is available, install an OCR language pack through Windows
+Settings > Time & language > Language & region.
+
+Choose Ollama under Settings > Read screen > OCR engine for model-based extraction
+of Markdown, tables, and formulas. The saved model defaults to `glm-ocr:latest`;
+install it with `ollama pull glm-ocr:latest`. Model selection, output limits, and
+context limits appear when Ollama is selected. Switching engines preserves these
+settings. Existing configurations without an engine choice default to Windows OCR.
+Native OCR reads the original cropped pixels; Ollama images retain the 1,920-pixel
+size limit. Empty recognition is reported separately from engine failures.
 
 For development, `SNIPPET_OLLAMA_MODEL` overrides the saved model name without
 changing the settings file. Thinking is disabled by default for faster replies;

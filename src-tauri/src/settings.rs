@@ -128,6 +128,14 @@ impl ShortcutConfig {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OcrEngine {
+    #[default]
+    Windows,
+    Ollama,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -135,6 +143,8 @@ pub struct AppConfig {
     pub model: Option<String>,
     #[serde(default = "default_ocr_model")]
     pub ocr_model: String,
+    #[serde(default)]
+    pub ocr_engine: OcrEngine,
     #[serde(default = "default_ocr_num_predict")]
     pub ocr_num_predict: u32,
     #[serde(default = "default_ocr_num_ctx")]
@@ -156,6 +166,7 @@ impl Default for AppConfig {
         Self {
             ollama_base_url: DEFAULT_OLLAMA_BASE_URL.into(),
             model: None,
+            ocr_engine: OcrEngine::Windows,
             ocr_model: DEFAULT_OCR_MODEL.into(),
             ocr_num_predict: DEFAULT_OCR_NUM_PREDICT,
             ocr_num_ctx: DEFAULT_OCR_NUM_CTX,
@@ -330,8 +341,8 @@ impl SettingsError {
 #[cfg(test)]
 mod tests {
     use super::{
-        snapshot_for, AppConfig, ModelSource, SettingsError, ShortcutConfig, DEFAULT_OCR_MODEL,
-        DEFAULT_OCR_NUM_CTX, DEFAULT_OCR_NUM_PREDICT, DEFAULT_OLLAMA_BASE_URL,
+        snapshot_for, AppConfig, ModelSource, OcrEngine, SettingsError, ShortcutConfig,
+        DEFAULT_OCR_MODEL, DEFAULT_OCR_NUM_CTX, DEFAULT_OCR_NUM_PREDICT, DEFAULT_OLLAMA_BASE_URL,
     };
 
     #[test]
@@ -339,6 +350,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.ollama_base_url, DEFAULT_OLLAMA_BASE_URL);
         assert_eq!(config.model, None);
+        assert_eq!(config.ocr_engine, super::OcrEngine::Windows);
         assert_eq!(config.ocr_model, DEFAULT_OCR_MODEL);
         assert_eq!(config.ocr_num_predict, DEFAULT_OCR_NUM_PREDICT);
         assert_eq!(config.ocr_num_ctx, DEFAULT_OCR_NUM_CTX);
@@ -352,6 +364,7 @@ mod tests {
         let config = AppConfig {
             ollama_base_url: " http://localhost:11434/ ".into(),
             model: Some(" qwen3:8b ".into()),
+            ocr_engine: OcrEngine::Windows,
             ocr_model: " glm-ocr:q8_0 ".into(),
             ocr_num_predict: 1_024,
             ocr_num_ctx: 8_192,
@@ -379,6 +392,7 @@ mod tests {
         let error = AppConfig {
             ollama_base_url: "not-a-url".into(),
             model: None,
+            ocr_engine: OcrEngine::Windows,
             ocr_model: DEFAULT_OCR_MODEL.into(),
             ocr_num_predict: DEFAULT_OCR_NUM_PREDICT,
             ocr_num_ctx: DEFAULT_OCR_NUM_CTX,
@@ -445,9 +459,25 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(config.ocr_engine, super::OcrEngine::Windows);
         assert_eq!(config.ocr_model, DEFAULT_OCR_MODEL);
         assert!(!config.has_completed_onboarding);
         assert!(config.automatic_updates);
+    }
+
+    #[test]
+    fn persists_an_explicit_ollama_engine_choice() {
+        let config = AppConfig {
+            ocr_engine: OcrEngine::Ollama,
+            ..AppConfig::default()
+        };
+        let saved = serde_json::to_string(&config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AppConfig>(&saved)
+                .unwrap()
+                .ocr_engine,
+            OcrEngine::Ollama
+        );
     }
 
     #[test]

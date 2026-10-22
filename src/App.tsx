@@ -93,6 +93,7 @@ type ChatMessage = {
 type AppConfig = {
   ollamaBaseUrl: string;
   model: string | null;
+  ocrEngine: "windows" | "ollama";
   ocrModel: string;
   ocrNumPredict: number;
   ocrNumCtx: number;
@@ -610,6 +611,7 @@ function App() {
     isSettingsOpen,
     isSettingsLoading,
     settingsPage,
+    settingsDraft?.ocrEngine,
     promptPreview,
     promptPreviewError,
     providerStatus,
@@ -1212,6 +1214,26 @@ function App() {
               {settingsPage === "ocr" && (
                 <>
               <label className="mt-3 block text-xs font-medium text-zinc-400">
+                OCR engine
+                <select
+                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
+                  value={settingsDraft?.ocrEngine ?? "windows"}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({
+                    ...draft,
+                    ocrEngine: event.target.value as AppConfig["ocrEngine"],
+                  }))}
+                >
+                  <option value="windows">Windows OCR (default)</option>
+                  <option value="ollama">Ollama</option>
+                </select>
+              </label>
+              <p className="mt-2 text-xs text-zinc-500">
+                {settingsDraft?.ocrEngine === "ollama"
+                  ? "Use a local vision model for Markdown, tables, and formulas."
+                  : "Fast, local text extraction using installed Windows OCR languages and your preferred language settings."}
+              </p>
+              {settingsDraft?.ocrEngine === "ollama" && (<>
+              <label className="mt-3 block text-xs font-medium text-zinc-400">
                 Read screen model
                 <select
                   className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
@@ -1263,6 +1285,7 @@ function App() {
                   }))}
                 />
               </label>
+              </>)}
                 </>
               )}
 
@@ -1444,7 +1467,7 @@ function App() {
                       ? "Read through Windows legacy accessibility (IAccessible); clipboard untouched."
                     : selection.source === "clipboard-copy"
                       ? `Captured through Copy. Previous clipboard text ${selection.clipboardRestored ? "restored" : "could not be restored"}.`
-                      : "Extracted from a screenshot using the OCR model."}
+                      : "Extracted from a screenshot using OCR."}
                 >
                   {selection.source === "ui-automation" ? "UI Automation"
                     : selection.source === "legacy-accessibility" ? "IAccessible"

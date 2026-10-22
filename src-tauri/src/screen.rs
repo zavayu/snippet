@@ -3,7 +3,7 @@
 //! Captures stay in memory. Region capture crops the original monitor image
 //! before encoding, so text is not blurred by resizing a whole display first.
 
-use std::io::Cursor;
+use std::{io::Cursor, sync::Arc};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{DynamicImage, ImageFormat};
@@ -19,6 +19,7 @@ const MIN_REGION_EDGE: u32 = 24;
 #[derive(Debug, Clone)]
 pub struct CapturedImage {
     pub png_base64: String,
+    pub original: Arc<DynamicImage>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,7 +120,8 @@ fn region_is_valid(region: NormalizedRegion) -> bool {
 }
 
 fn encode_image(image: DynamicImage) -> Result<(CapturedImage, ImagePreview), ScreenCaptureError> {
-    let image = resize_if_needed(image);
+    let original = Arc::new(image);
+    let image = resize_if_needed((*original).clone());
     let (width, height) = (image.width(), image.height());
     let mut png = Vec::new();
     image
@@ -132,7 +134,13 @@ fn encode_image(image: DynamicImage) -> Result<(CapturedImage, ImagePreview), Sc
         height,
     };
 
-    Ok((CapturedImage { png_base64 }, preview))
+    Ok((
+        CapturedImage {
+            png_base64,
+            original,
+        },
+        preview,
+    ))
 }
 
 fn resize_if_needed(image: DynamicImage) -> DynamicImage {

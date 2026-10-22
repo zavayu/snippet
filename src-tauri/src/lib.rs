@@ -1,4 +1,5 @@
 mod conversation;
+mod ocr;
 pub mod prompt;
 pub mod provider;
 mod screen;
@@ -236,27 +237,24 @@ struct ImageCaptureStore {
 
 struct StoredImage {
     id: u64,
-    png_base64: String,
+    image: screen::CapturedImage,
 }
 
 impl ImageCaptureStore {
     fn store(&self, image: screen::CapturedImage) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         if let Ok(mut active) = self.active.lock() {
-            *active = Some(StoredImage {
-                id,
-                png_base64: image.png_base64,
-            });
+            *active = Some(StoredImage { id, image });
         }
         id
     }
 
-    fn get(&self, id: u64) -> Option<String> {
+    fn get(&self, id: u64) -> Option<screen::CapturedImage> {
         let active = self.active.lock().ok()?;
         active
             .as_ref()
             .filter(|image| image.id == id)
-            .map(|image| image.png_base64.clone())
+            .map(|image| image.image.clone())
     }
 
     fn clear(&self) {
@@ -689,7 +687,7 @@ fn generate_for_selection(
             .iter_mut()
             .find(|message| message.role == crate::prompt::ChatRole::User)
         {
-            user_message.images = Some(vec![image]);
+            user_message.images = Some(vec![image.png_base64]);
         }
     }
     let provider = OllamaProvider::new(&snapshot.config.ollama_base_url)
@@ -897,8 +895,8 @@ fn read_screen(
     let image = image_store.get(request.image_id).ok_or_else(|| {
         "That screen capture is no longer available. Capture it again and retry.".to_owned()
     })?;
-    let provider = OllamaProvider::new(&snapshot.config.ollama_base_url)
-        .map_err(|error| error.user_message())?;
+    let engine = snapshot.config.ocr_engine;
+    let base_url = snapshot.config.ollama_base_url.clone();
     let ocr_options = OcrGenerationOptions {
         num_predict: snapshot.config.ocr_num_predict,
         num_ctx: snapshot.config.ocr_num_ctx,
@@ -926,9 +924,31 @@ fn read_screen(
     tauri::async_runtime::spawn(async move {
         let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
         let provider_task = tauri::async_runtime::spawn(async move {
-            provider
-                .stream_ocr(model, image, ocr_options, cancellation, event_sender)
-                .await
+            match engine {
+                settings::OcrEngine::Windows => {
+                    let native = tauri::async_runtime::spawn_blocking(move || {
+                        ocr::recognize(&image.original)
+                    });
+                    let text = tokio::select! {
+                        _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+                        result = native => result.map_err(|error| ProviderError::RequestFailed(error.to_string()))??,
+                    };
+                    event_sender
+                        .send(GenerationEvent::Delta(text))
+                        .map_err(|_| ProviderError::Cancelled)
+                }
+                settings::OcrEngine::Ollama => {
+                    OllamaProvider::new(&base_url)?
+                        .stream_ocr(
+                            model,
+                            image.png_base64,
+                            ocr_options,
+                            cancellation,
+                            event_sender,
+                        )
+                        .await
+                }
+            }
         });
 
         let mut extracted_text = String::new();
@@ -967,7 +987,7 @@ fn read_screen(
                     ScreenReadFailure {
                         request_id,
                         image_id: request.image_id,
-                        message: "The OCR model did not return readable text. Try a smaller region or another OCR model.".into(),
+                        message: "No text detected. Try a clearer region or choose another OCR engine in Settings.".into(),
                     },
                 );
             }

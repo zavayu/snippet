@@ -4,6 +4,11 @@
 
 ### Improved
 
+- Default screen and region text extraction to local Windows OCR using original
+  capture pixels, with guidance when OCR language packs are missing.
+- Add a Windows/Ollama OCR engine selector in Settings and preserve Ollama model
+  and generation limits when switching engines.
+
 - Position the popup beneath visible selected text when UIA supplies rectangles,
   flipping above when needed and retaining the anchor through resizing.
 - Handle monitor boundaries and display scaling, with cursor placement when
