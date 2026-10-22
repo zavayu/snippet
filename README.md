@@ -51,8 +51,9 @@ of you without breaking your flow.
   it, change settings, or quit from the tray menu.
 - **Optional launch at sign-in** — enable it during first-run setup or later in
   Settings → General to keep shortcuts ready in the background.
-- **Safe clipboard handling** — restores prior plain-text clipboard content when
-  possible after capturing a selection.
+- **Clipboard-free selection capture** - reads selected text through Windows UI
+  Automation when supported. Other apps use a copy fallback that restores prior
+  plain-text clipboard content when possible.
 
 ## How it works
 
@@ -76,6 +77,49 @@ Snippet displays the answer
 - Node.js and a Rust toolchain for development
 - [Ollama](https://ollama.com/) installed locally
 - At least one installed Ollama chat model
+
+## Selection capture
+
+Selection shortcuts first ask the foreground application's Windows accessibility
+provider for the selected text. Supporting apps leave the clipboard untouched,
+and code indentation and trailing newlines are preserved. Disjoint selected
+ranges are separated by a newline, with a combined limit of 20,000 characters.
+
+Accessibility lookup follows Selection Hook's Windows ordering: focused UIA
+TextPattern, the focused legacy IAccessible bridge, ancestor TextPatterns in the
+control-view tree (up to ten levels), then direct window IAccessible access.
+Only selection ranges or an explicit selection string are accepted; a control's
+full name or value is never substituted. Selected interface objects suppress Copy.
+Development tools label successful legacy reads **IAccessible**.
+
+When UI Automation supplies visible selection rectangles, the popup opens below
+the last visible selected line, or above the selection if there is not enough
+space below. The anchor is retained while the popup resizes, accounts for display
+scaling and monitor edges, and is released when you drag the popup. Clipboard,
+legacy, and geometry-free captures retain cursor-based placement.
+
+The open-popup shortcut gives accessibility capture up to 120 ms. If that is
+inconclusive, it automatically tries copying for up to another 180 ms before
+opening the composer. Confirmed empty selections skip Copy entirely.
+Empty and inconclusive attempts open quietly, without a capture error.
+When capture is inconclusive, a **Capture selected text** icon near Settings lets
+you explicitly retry capture from the original app. The popup uses shorter
+capture timeouts than explicit capture retries and action shortcuts.
+
+**Capture selected text** temporarily returns to the original app for a full capture,
+then attaches the text without clearing your draft. Explain, Summarize, and
+Refine shortcuts also use full capture and report specific failures. These
+explicit attempts fall back to copying if accessibility is unavailable or takes
+too long. A supported control reporting an empty selection does not trigger Copy.
+Capture is cancelled if the foreground window changes.
+
+VS Code's Monaco editor also tries the full accessibility sequence before Copy.
+Its empty proxy input is treated as inconclusive, since it may not represent the
+actual editor selection. Ordinary text fields can report a confirmed empty range.
+
+Accessibility support varies by application. Elevated applications may remain
+inaccessible. The copy fallback preserves only prior plain text, not images,
+files, or rich formatting; full clipboard preservation is not yet implemented.
 
 ## Getting started
 

@@ -4313,6 +4313,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "tokio-util",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
  "xcap",
 ]

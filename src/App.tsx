@@ -17,16 +17,12 @@ import { UpdatesPanel } from "./components/UpdatesPanel";
 import { updateController, useUpdates } from "./useUpdates";
 import { conversationReducer, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
 import { ConversationPanel } from "./components/ConversationPanel";
+import { popupPosition, type SelectionBounds } from "./popupPosition";
 
 const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
 const POPUP_MAX_HEIGHT = 900;
 const POPUP_SHADOW_MARGIN = 24;
-const POPUP_CONTENT_INSET = 24;
-const POPUP_CURSOR_GAP_X = 8;
-const POPUP_CURSOR_GAP_Y = 10;
-const POPUP_WINDOW_OFFSET_X = POPUP_CURSOR_GAP_X - POPUP_CONTENT_INSET;
-const POPUP_WINDOW_OFFSET_Y = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 
 type CaptureState = "waiting" | "captured" | "error";
 type OcrState = "idle" | "reading" | "ready" | "error";
@@ -42,9 +38,10 @@ const QUICK_ACTION_LABELS: Record<QuickAction, string> = {
 
 type CapturedSelection = {
   text: string;
-  source: "clipboard-copy" | "ui-automation";
+  source: "clipboard-copy" | "ui-automation" | "legacy-accessibility" | "ocr";
   truncated: boolean;
   clipboardRestored: boolean;
+  bounds: SelectionBounds | null;
 };
 
 type ShortcutConfig = {
@@ -76,6 +73,12 @@ type ImageCaptureEvent = {
 
 type CaptureFailure = {
   message: string;
+};
+
+type PopupOpenedEvent = {
+  captureStatus: "not-attempted" | "empty" | "inconclusive";
+  captureMessage: string | null;
+  retryId: number | null;
 };
 
 type PromptIntent =
@@ -199,6 +202,8 @@ function App() {
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [image, setImage] = useState<ImageCaptureEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [captureNotice, setCaptureNotice] = useState<PopupOpenedEvent | null>(null);
+  const [isRetryingCapture, setIsRetryingCapture] = useState(false);
   const [customInstruction, setCustomInstruction] = useState("");
   const [ocrState, setOcrState] = useState<OcrState>("idle");
   const [ocrSource, setOcrSource] = useState<ImageCaptureEvent["source"] | null>(null);
@@ -227,6 +232,7 @@ function App() {
   const [popupOpenSequence, setPopupOpenSequence] = useState(0);
   const popupContentRef = useRef<HTMLDivElement>(null);
   const popupPositionRequestRef = useRef<{ cursor: Promise<PhysicalPosition | null> } | null>(null);
+  const popupSelectionBoundsRef = useRef<SelectionBounds | null>(null);
   const lastIntentRef = useRef<PromptIntent | null>(null);
   const pendingOcrIntentRef = useRef<PromptIntent | null>(null);
   const ocrImageIdRef = useRef<number | null>(null);
@@ -252,6 +258,7 @@ function App() {
     : [];
 
   const resetConversation = () => {
+    popupSelectionBoundsRef.current = null;
     const conversationId = ++conversationIdRef.current;
     activeTurnRef.current = null;
     dispatchConversation({ type: "reset", conversationId });
@@ -271,6 +278,8 @@ function App() {
     setOcrError(null);
     setQueuedOcrIntent(null);
     setErrorMessage(null);
+    setCaptureNotice(null);
+    setIsRetryingCapture(false);
     setCustomInstruction("");
     setIsSelectionExpanded(false);
     setIsAttachedTextExpanded(false);
@@ -314,14 +323,15 @@ function App() {
     }
   };
 
-  const requestPopupPosition = () => {
+  const requestPopupPosition = (bounds: SelectionBounds | null = null) => {
+    popupSelectionBoundsRef.current = bounds;
     // Capture the opening location before the pointer moves onto a popup control.
     popupPositionRequestRef.current = { cursor: cursorPosition().catch(() => null) };
     setPopupOpenSequence((sequence) => sequence + 1);
   };
 
-  const openChatPopup = () => {
-    requestPopupPosition();
+  const openChatPopup = (bounds: SelectionBounds | null = null) => {
+    requestPopupPosition(bounds);
     setIsSettingsOpen(false);
     setSettingsPage("general");
     setIsPopupSurfaceVisible(false);
@@ -384,9 +394,12 @@ function App() {
 
   useEffect(() => {
     const unlisten = Promise.all([
-      listen("popup-opened", () => {
+      listen<PopupOpenedEvent>("popup-opened", (event) => {
         resetConversation();
         openChatPopup();
+        if (event.payload.captureStatus === "inconclusive") {
+          setCaptureNotice(event.payload);
+        }
       }),
       listen("open-settings", () => {
         setIsSettingsOpen(true);
@@ -405,7 +418,7 @@ function App() {
       listen<SelectionCaptureEvent>("selection-captured", (event) => {
         const capturedSelection = event.payload.selection;
         resetConversation();
-        openChatPopup();
+        openChatPopup(capturedSelection.bounds);
         setSelection(capturedSelection);
         setCaptureState("captured");
         if (event.payload.action) {
@@ -456,9 +469,10 @@ function App() {
         ocrImageIdRef.current = null;
         const screenText: CapturedSelection = {
           text: event.payload.text,
-          source: "ui-automation",
+          source: "ocr",
           truncated: false,
           clipboardRestored: true,
+          bounds: null,
         };
         const pendingIntent = pendingOcrIntentRef.current;
         pendingOcrIntentRef.current = null;
@@ -507,6 +521,7 @@ function App() {
     let cancelled = false;
     // Keep an opening request pending if a newer layout cancels this pass.
     const positionRequest = popupPositionRequestRef.current;
+    const selectionBounds = popupSelectionBoundsRef.current;
 
     const frame = window.requestAnimationFrame(() => {
       void (async () => {
@@ -515,8 +530,12 @@ function App() {
         if (cancelled) {
           return;
         }
-        const monitor = cursor
-          ? await monitorFromPoint(cursor.x, cursor.y)
+        const anchor = selectionBounds ? {
+          x: selectionBounds.last.x + selectionBounds.last.width / 2,
+          y: selectionBounds.last.y + selectionBounds.last.height / 2,
+        } : cursor;
+        const monitor = anchor
+          ? await monitorFromPoint(anchor.x, anchor.y)
           : await currentMonitor();
         if (cancelled) {
           return;
@@ -530,14 +549,16 @@ function App() {
         const nextHeight = Math.min(desiredHeight, maxHeight);
         await popupWindow.setSize(new LogicalSize(POPUP_WIDTH, nextHeight));
 
-        if (cancelled || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
+        if (cancelled || popupSelectionBoundsRef.current !== selectionBounds
+          || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
           return;
         }
 
         const popupSize = await popupWindow.outerSize();
 
-        const position = !positionRequest ? await popupWindow.outerPosition() : null;
-        if (cancelled || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
+        const position = !positionRequest && !selectionBounds ? await popupWindow.outerPosition() : null;
+        if (cancelled || popupSelectionBoundsRef.current !== selectionBounds
+          || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
           return;
         }
         if (positionRequest) popupPositionRequestRef.current = null;
@@ -558,13 +579,12 @@ function App() {
           if (x !== position.x || y !== position.y) await popupWindow.setPosition(new PhysicalPosition(x, y));
           return;
         }
-        if (!cursor) return;
-        const x = Math.min(Math.max(cursor.x + POPUP_WINDOW_OFFSET_X, minX), maxX);
-        const y = cursor.y + POPUP_WINDOW_OFFSET_Y <= maxY
-          ? cursor.y + POPUP_WINDOW_OFFSET_Y
-          : Math.max(minY, cursor.y - POPUP_WINDOW_OFFSET_Y - popupSize.height);
-
-        await popupWindow.setPosition(new PhysicalPosition(x, y));
+        const placement = popupPosition({
+          bounds: selectionBounds, cursor,
+          workArea: { x: minX, y: minY, width: workArea.size.width, height: workArea.size.height },
+          size: popupSize, scaleFactor: monitor.scaleFactor,
+        });
+        if (placement) await popupWindow.setPosition(new PhysicalPosition(placement.x, placement.y));
       })().catch(() => undefined);
     });
 
@@ -576,6 +596,8 @@ function App() {
     popupOpenSequence,
     conversation,
     captureState,
+    captureNotice,
+    isRetryingCapture,
     errorMessage,
     generationState,
     ocrError,
@@ -788,6 +810,32 @@ function App() {
     }
   };
 
+  const retrySelectionCapture = async () => {
+    if (captureNotice?.retryId == null || isRetryingCapture) return;
+    const conversationId = conversationIdRef.current;
+    setIsRetryingCapture(true);
+    try {
+      const captured = await invoke<CapturedSelection>("retry_selection_capture", {
+        retryId: captureNotice.retryId,
+      });
+      if (conversationIdRef.current !== conversationId) return;
+      setSelection(captured);
+      requestPopupPosition(captured.bounds);
+      setCaptureState("captured");
+      setCaptureNotice(null);
+      setErrorMessage(null);
+    } catch (error) {
+      if (conversationIdRef.current === conversationId) {
+        setCaptureNotice((notice) => notice && ({ ...notice, captureMessage: errorText(error) }));
+      }
+    } finally {
+      if (conversationIdRef.current === conversationId) {
+        setIsRetryingCapture(false);
+        window.requestAnimationFrame(() => initialInputRef.current?.focus());
+      }
+    }
+  };
+
   const closePopup = () => {
     popupPositionRequestRef.current = null;
     resetConversation();
@@ -820,6 +868,8 @@ function App() {
             className={`relative -mx-4 -mt-4 mb-3 flex cursor-grab select-none items-center gap-3 pl-4 pt-4 active:cursor-grabbing ${conversation.expanded && !isSettingsOpen ? "pr-32" : "pr-24"}`}
             onMouseDown={(event) => {
               if (event.button === 0) {
+                popupSelectionBoundsRef.current = null;
+                popupPositionRequestRef.current = null;
                 void getCurrentWindow().startDragging().catch(() => undefined);
               }
             }}
@@ -834,7 +884,7 @@ function App() {
             )}
             {!isSettingsOpen && !hasSubmittedPrompt && (
               <form
-                className="min-w-0 flex-1"
+                className={`min-w-0 flex-1 ${captureNotice?.retryId != null ? "pr-9" : ""}`}
                 onMouseDown={(event) => event.stopPropagation()}
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -877,6 +927,21 @@ function App() {
               <span data-tauri-drag-region className="min-w-0 flex-1 px-1 py-2 text-[17px] text-zinc-400">
                 Conversation
               </span>
+            )}
+            {!isSettingsOpen && !hasSubmittedPrompt && captureNotice?.retryId != null && (
+              <button
+                type="button"
+                aria-label="Capture selected text"
+                title="Capture selected text from the original app"
+                disabled={isRetryingCapture}
+                className="absolute right-20 top-4 grid size-8 cursor-pointer place-items-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-wait disabled:opacity-50"
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={() => void retrySelectionCapture()}
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" className={`size-4 fill-none stroke-current stroke-[1.8] ${isRetryingCapture ? "animate-pulse" : ""}`} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3H4v4m12-4h4v4M4 17v4h4m12-4v4h-4M9 8h6m-3 0v8m-2 0h4" />
+                </svg>
+              </button>
             )}
             {conversation.expanded && !isSettingsOpen && <button
               type="button"
@@ -1361,15 +1426,31 @@ function App() {
 
           {!isSettingsOpen && captureState === "captured" && selection && showDevelopmentPreviews && (
             <div>
-              <button
-                type="button"
-                aria-expanded={isSelectionExpanded}
-                className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-300"
-                onClick={() => setIsSelectionExpanded((expanded) => !expanded)}
-              >
-                <span aria-hidden="true">{isSelectionExpanded ? "−" : "+"}</span>
-                Selected Text
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-expanded={isSelectionExpanded}
+                  className="flex cursor-pointer items-center gap-2 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-300"
+                  onClick={() => setIsSelectionExpanded((expanded) => !expanded)}
+                >
+                  <span aria-hidden="true">{isSelectionExpanded ? "-" : "+"}</span>
+                  Selected Text
+                </button>
+                <span
+                  className="rounded border border-zinc-700/70 px-1.5 py-0.5 text-[10px] text-zinc-400"
+                  title={selection.source === "ui-automation"
+                    ? "Read directly through Windows accessibility; clipboard untouched."
+                    : selection.source === "legacy-accessibility"
+                      ? "Read through Windows legacy accessibility (IAccessible); clipboard untouched."
+                    : selection.source === "clipboard-copy"
+                      ? `Captured through Copy. Previous clipboard text ${selection.clipboardRestored ? "restored" : "could not be restored"}.`
+                      : "Extracted from a screenshot using the OCR model."}
+                >
+                  {selection.source === "ui-automation" ? "UI Automation"
+                    : selection.source === "legacy-accessibility" ? "IAccessible"
+                    : selection.source === "clipboard-copy" ? "Clipboard fallback" : "OCR"}
+                </span>
+              </div>
               {isSelectionExpanded && (
                 <blockquote className="preview-scroll mt-3 max-h-44 overflow-y-auto whitespace-pre-wrap rounded-lg border border-zinc-800/80 bg-zinc-950/50 p-3 text-[10px] leading-4 text-zinc-400">
                   {selection.text}
@@ -1414,6 +1495,23 @@ function App() {
                   </div>
                 )}
               </section>
+            </div>
+          )}
+
+          {!isSettingsOpen && !hasSubmittedPrompt && captureNotice?.captureMessage && (
+            <div role="status" className="mt-3 flex items-center gap-3 text-xs leading-5 text-zinc-400">
+              <span className="min-w-0 flex-1">{captureNotice.captureMessage}</span>
+              {captureNotice.retryId != null && (
+                <button
+                  type="button"
+                  disabled={isRetryingCapture}
+                  className="shrink-0 cursor-pointer rounded-md px-2 py-1 text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-wait disabled:opacity-50"
+                  title="Return to the original app and try capturing its selection again"
+                  onClick={() => void retrySelectionCapture()}
+                >
+                  {isRetryingCapture ? "Capturing…" : "Retry capture"}
+                </button>
+              )}
             </div>
           )}
 

@@ -77,8 +77,7 @@ impl PromptBuilder {
         let selected_text = request
             .selected_text
             .as_deref()
-            .map(str::trim)
-            .filter(|text| !text.is_empty());
+            .filter(|text| !text.trim().is_empty());
         if selected_text.is_none()
             && !request.has_image
             && matches!(&request.intent, PromptIntent::QuickAction { .. })
@@ -187,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_an_explanation_prompt() {
+    fn builds_an_explanation_prompt_without_trimming_the_reference() {
         let messages = PromptBuilder::build(request(PromptIntent::QuickAction {
             action: QuickAction::Explain,
         }))
@@ -199,9 +198,9 @@ mod tests {
         assert!(messages[1]
             .content
             .contains("Explain the selected text clearly."));
-        assert!(messages[1]
-            .content
-            .contains("<selected_text>\nThe scheduler may preempt a process.\n</selected_text>"));
+        assert!(messages[1].content.contains(
+            "<selected_text>\n  The scheduler may preempt a process.  \n</selected_text>"
+        ));
     }
 
     #[test]

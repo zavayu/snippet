@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Improved
+
+- Position the popup beneath visible selected text when UIA supplies rectangles,
+  flipping above when needed and retaining the anchor through resizing.
+- Handle monitor boundaries and display scaling, with cursor placement when
+  selection geometry is unavailable and manual dragging overriding the anchor.
+- Open the composer after a brief accessibility check and a short automatic copy
+  fallback when needed, so unsupported editors capture on the first attempt.
+- Distinguish confirmed empty selections from inconclusive captures, with a
+  Retry capture action that preserves the draft and targets the original app.
+- Keep full capture and specific failure messages for action shortcuts and retries.
+- Keep passive capture misses quiet; show a neutral capture icon and reserve
+  failure messages and Retry capture for explicitly requested captures.
+- Match Selection Hook's accessibility lookup ordering, adding the legacy UIA
+  bridge and direct IAccessible reads before Copy, with a development-only badge.
+- Try Monaco accessibility reads before fallback and suppress Copy for non-text
+  object selections.
+- Read highlighted text on demand through Windows UI Automation before trying
+  clipboard copy, using the existing selection shortcuts.
+- Keep accessibility work off the UI thread, with bounded requests and a short
+  timeout before falling back to copy for unsupported or slow providers.
+- Preserve selection indentation and trailing whitespace, and support multiple
+  selected ranges within the existing 20,000-character limit.
+- Capture the source window at shortcut invocation and reject focus changes.
+- Avoid sending Copy when a supporting accessibility control reports no selection.
+- Retain copy fallback for inconclusive Monaco editor selections (including VS Code).
+
 ## 0.4.0
 
 ### Added

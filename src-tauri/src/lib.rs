@@ -66,6 +66,44 @@ const POPUP_WINDOW_OFFSET_Y: i32 = POPUP_CURSOR_GAP_Y - POPUP_CONTENT_INSET;
 #[derive(Default)]
 struct CaptureState(Arc<AtomicBool>);
 
+#[derive(Default)]
+struct SelectionRetryStore {
+    next_id: AtomicU64,
+    target: Mutex<Option<(u64, selection::CaptureTarget)>>,
+}
+
+impl SelectionRetryStore {
+    fn save(&self, target: selection::CaptureTarget) -> Option<u64> {
+        let mut pending = self.target.lock().ok()?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        *pending = Some((id, target));
+        Some(id)
+    }
+
+    fn get(&self, id: u64) -> Option<selection::CaptureTarget> {
+        self.target
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|(pending_id, _)| *pending_id == id)
+            .map(|(_, target)| *target)
+    }
+
+    fn clear(&self) {
+        if let Ok(mut target) = self.target.lock() {
+            *target = None;
+        }
+    }
+}
+
+struct CaptureReservation(Arc<AtomicBool>);
+
+impl Drop for CaptureReservation {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 // Serializes installation preparation against new captures and generation.
 #[derive(Default)]
 struct UpdateInstallState(Mutex<bool>);
@@ -329,6 +367,23 @@ struct CaptureFailure {
     message: String,
 }
 
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum PopupCaptureStatus {
+    #[default]
+    NotAttempted,
+    Empty,
+    Inconclusive,
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PopupOpenedEvent {
+    capture_status: PopupCaptureStatus,
+    capture_message: Option<String>,
+    retry_id: Option<u64>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SelectionCaptureEvent {
@@ -469,6 +524,7 @@ macro_rules! snippet_command_handler {
             discard_image_capture,
             complete_region_capture,
             cancel_region_capture,
+            retry_selection_capture,
             preview_prompt,
         ]
     };
@@ -492,8 +548,56 @@ macro_rules! snippet_command_handler {
             discard_image_capture,
             complete_region_capture,
             cancel_region_capture,
+            retry_selection_capture,
         ]
     };
+}
+
+#[tauri::command]
+async fn retry_selection_capture(
+    app: AppHandle,
+    retry_id: u64,
+) -> Result<CapturedSelection, String> {
+    let reservation = {
+        let install = app.state::<UpdateInstallState>();
+        let installing = install
+            .0
+            .lock()
+            .map_err(|_| "Update state is unavailable.")?;
+        if *installing {
+            return Err("Wait for the update to finish.".into());
+        }
+        let capture = app.state::<CaptureState>().0.clone();
+        if capture.swap(true, Ordering::AcqRel) {
+            return Err("Another capture is already in progress.".into());
+        }
+        CaptureReservation(capture)
+    };
+    let target = app
+        .state::<SelectionRetryStore>()
+        .get(retry_id)
+        .ok_or("This capture is no longer available. Select text and use the shortcut again.")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservation = reservation;
+        let result = (|| {
+            let window = app
+                .get_webview_window("main")
+                .ok_or("Snippet's window is unavailable.")?;
+            window.hide().map_err(|error| error.to_string())?;
+            target.activate().map_err(|error| error.user_message())?;
+            selection::capture_default_selection(target).map_err(|error| error.user_message())
+        })();
+        if result.is_ok() {
+            app.state::<SelectionRetryStore>().clear();
+        }
+        show_popup_with_bounds(
+            &app,
+            result.as_ref().ok().and_then(|selection| selection.bounds),
+        );
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -972,6 +1076,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(UpdateInstallState::default())
         .manage(CaptureState::default())
+        .manage(SelectionRetryStore::default())
         .manage(RegionCaptureStore::default())
         .manage(ImageCaptureStore::default())
         .manage(GenerationState::default())
@@ -1074,6 +1179,7 @@ fn start_capture(app: &AppHandle, action: ShortcutAction) {
     if state.swap(true, Ordering::AcqRel) {
         return;
     }
+    app.state::<SelectionRetryStore>().clear();
 
     let app_handle = app.clone();
     match action {
@@ -1133,9 +1239,18 @@ fn start_capture(app: &AppHandle, action: ShortcutAction) {
             });
         }
         action => {
+            // Snapshot before scheduling work or showing our popup.
+            let target = selection::capture_target();
             thread::spawn(move || {
-                let capture_result = selection::capture_default_selection();
-                publish_capture_result(&app_handle, capture_result, action);
+                let original_target = target.as_ref().ok().copied();
+                let capture_result = target.and_then(|target| {
+                    if matches!(action, ShortcutAction::OpenPopup) {
+                        selection::capture_for_popup(target)
+                    } else {
+                        selection::capture_default_selection(target)
+                    }
+                });
+                publish_capture_result(&app_handle, capture_result, action, original_target);
                 state.store(false, Ordering::Release);
             });
         }
@@ -1196,9 +1311,16 @@ fn publish_capture_result(
     app: &AppHandle,
     capture_result: Result<CapturedSelection, CaptureError>,
     action: ShortcutAction,
+    target: Option<selection::CaptureTarget>,
 ) {
     app.state::<ImageCaptureStore>().clear();
-    show_popup(app);
+    show_popup_with_bounds(
+        app,
+        capture_result
+            .as_ref()
+            .ok()
+            .and_then(|selection| selection.bounds),
+    );
 
     match capture_result {
         Ok(selection) => {
@@ -1215,10 +1337,28 @@ fn publish_capture_result(
                 SelectionCaptureEvent { selection, action },
             );
         }
-        Err(CaptureError::NoSelection | CaptureError::TimedOut)
-            if matches!(action, ShortcutAction::OpenPopup) =>
-        {
-            let _ = app.emit(POPUP_OPENED_EVENT, ());
+        Err(error) if matches!(action, ShortcutAction::OpenPopup) => {
+            let event = if matches!(error, CaptureError::NoSelection) {
+                PopupOpenedEvent {
+                    capture_status: PopupCaptureStatus::Empty,
+                    ..Default::default()
+                }
+            } else {
+                let protected = matches!(error, CaptureError::ProtectedField);
+                PopupOpenedEvent {
+                    capture_status: PopupCaptureStatus::Inconclusive,
+                    // A passive lookup cannot establish that a selection existed.
+                    // Keep opening the composer quiet; report errors only after
+                    // an explicit capture request.
+                    capture_message: None,
+                    retry_id: if protected {
+                        None
+                    } else {
+                        target.and_then(|target| app.state::<SelectionRetryStore>().save(target))
+                    },
+                }
+            };
+            let _ = app.emit(POPUP_OPENED_EVENT, event);
         }
         Err(error) => {
             let _ = app.emit(
@@ -1341,14 +1481,19 @@ fn close_region_overlay(app: &AppHandle) {
 }
 
 fn open_popup(app: &AppHandle) {
+    app.state::<SelectionRetryStore>().clear();
     show_popup(app);
-    let _ = app.emit(POPUP_OPENED_EVENT, ());
+    let _ = app.emit(POPUP_OPENED_EVENT, PopupOpenedEvent::default());
 }
 
 fn show_popup(app: &AppHandle) {
+    show_popup_with_bounds(app, None);
+}
+
+fn show_popup_with_bounds(app: &AppHandle, bounds: Option<selection::SelectionBounds>) {
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
-        position_popup_near_cursor(&window);
+        position_popup(&window, bounds);
 
         let _ = window.show();
         let _ = window.unminimize();
@@ -1357,28 +1502,50 @@ fn show_popup(app: &AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
-fn position_popup_near_cursor<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+fn position_popup<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    bounds: Option<selection::SelectionBounds>,
+) {
     let mut cursor = POINT::default();
-    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+    if let Some(bounds) = bounds {
+        cursor.x = (bounds.last.x + bounds.last.width / 2.0) as i32;
+        cursor.y = (bounds.last.y + bounds.last.height / 2.0) as i32;
+    } else if unsafe { GetCursorPos(&mut cursor) } == 0 {
         return;
     }
 
-    let mut x = cursor.x + POPUP_WINDOW_OFFSET_X;
-    let mut y = cursor.y + POPUP_WINDOW_OFFSET_Y;
+    let monitor = window
+        .monitor_from_point(cursor.x as f64, cursor.y as f64)
+        .ok()
+        .flatten();
+    let scale = monitor
+        .as_ref()
+        .map(|monitor| monitor.scale_factor())
+        .unwrap_or(1.0);
+    let inset = POPUP_CONTENT_INSET as f64 * scale;
+    let gap = 8.0 * scale;
+    let mut x = bounds
+        .map(|b| b.last.x - inset)
+        .unwrap_or(cursor.x as f64 + POPUP_WINDOW_OFFSET_X as f64 * scale);
+    let below = bounds
+        .map(|b| b.last.y + b.last.height + gap - inset)
+        .unwrap_or(cursor.y as f64 + POPUP_WINDOW_OFFSET_Y as f64 * scale);
+    let mut y = below;
 
-    if let (Ok(Some(monitor)), Ok(size)) = (
-        window.monitor_from_point(cursor.x as f64, cursor.y as f64),
-        window.outer_size(),
-    ) {
+    if let (Some(monitor), Ok(size)) = (monitor, window.outer_size()) {
         let work_area = monitor.work_area();
-        let max_x = (work_area.position.x + work_area.size.width as i32 - size.width as i32)
-            .max(work_area.position.x);
-        let max_y = (work_area.position.y + work_area.size.height as i32 - size.height as i32)
-            .max(work_area.position.y);
-
-        x = x.clamp(work_area.position.x, max_x);
-        y = y.clamp(work_area.position.y, max_y);
+        let min_x = work_area.position.x as f64;
+        let min_y = work_area.position.y as f64;
+        let max_x = (min_x + work_area.size.width as f64 - size.width as f64).max(min_x);
+        let max_y = (min_y + work_area.size.height as f64 - size.height as f64).max(min_y);
+        if y > max_y {
+            y = bounds
+                .map(|b| b.first.y - gap - size.height as f64 + inset)
+                .unwrap_or(cursor.y as f64 - 10.0 * scale - size.height as f64 + inset);
+        }
+        x = x.clamp(min_x, max_x);
+        y = y.clamp(min_y, max_y);
     }
 
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
