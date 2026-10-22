@@ -2,17 +2,25 @@
 
 ## Unreleased
 
+### Fixed
+
+- Fall back to Copy for Google Docs editor proxies instead of treating their empty
+  accessibility selections as proof that no text is selected.
+- Allow a bounded longer copy wait for Docs and wait for readable clipboard text
+  when a web editor publishes clipboard formats in stages.
+
+## 0.5.0
+
 ### Improved
 
 - Detect editable, read-only, and unknown selection sources through Windows accessibility.
 - Offer Replace selection for completed responses only when editability and source
   identity are confirmed, and recheck the target and selected text before insertion.
-
 - Default screen and region text extraction to local Windows OCR using original
   capture pixels, with guidance when OCR language packs are missing.
 - Add a Windows/Ollama OCR engine selector in Settings and preserve Ollama model
   and generation limits when switching engines.
-
+- Resize the settings window when changing OCR engines.
 - Position the popup beneath visible selected text when UIA supplies rectangles,
   flipping above when needed and retaining the anchor through resizing.
 - Handle monitor boundaries and display scaling, with cursor placement when

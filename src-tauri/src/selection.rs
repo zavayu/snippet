@@ -36,6 +36,7 @@ const COPY_RETRY_DELAY: Duration = Duration::from_millis(350);
 const SHORTCUT_RELEASE_TIMEOUT: Duration = Duration::from_millis(300);
 const POPUP_CAPTURE_BUDGET: Duration = Duration::from_millis(120);
 const POPUP_COPY_BUDGET: Duration = Duration::from_millis(180);
+const GOOGLE_DOCS_COPY_BUDGET: Duration = Duration::from_millis(600);
 const ACTION_UIA_BUDGET: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +93,7 @@ pub struct CapturedSelection {
 pub enum CaptureError {
     NoSelection,
     CopyRequired,
+    GoogleDocsCopyRequired,
     CopyUnavailable,
     ProtectedField,
     NonTextSelection,
@@ -108,6 +110,7 @@ impl CaptureError {
     pub fn user_message(&self) -> String {
         match self {
             Self::NoSelection => "No text is selected. Select text in another application and try again.".into(),
+            Self::GoogleDocsCopyRequired => "Google Docs needs a copy attempt to read its document selection.".into(),
             Self::CopyRequired => "This editor needs a copy attempt to read its selection.".into(),
             Self::CopyUnavailable => "The app did not provide selected text when asked to copy.".into(),
             Self::ProtectedField => "This protected field does not allow selection capture.".into(),
@@ -275,6 +278,10 @@ fn capture_with_policy(
     };
     match probe(budget) {
         Ok(Some(selection)) => Ok(selection),
+        Err(CaptureError::GoogleDocsCopyRequired) => copy(match policy {
+            CapturePolicy::BestEffort => GOOGLE_DOCS_COPY_BUDGET,
+            CapturePolicy::Required => SHORTCUT_RELEASE_TIMEOUT + CLIPBOARD_WAIT_TIMEOUT,
+        }),
         Ok(None) | Err(CaptureError::CopyRequired) => copy(match policy {
             CapturePolicy::BestEffort => POPUP_COPY_BUDGET,
             CapturePolicy::Required => SHORTCUT_RELEASE_TIMEOUT + CLIPBOARD_WAIT_TIMEOUT,
@@ -316,22 +323,20 @@ fn capture_from_clipboard_copy(
         let sequence_after_copy = clipboard_sequence_number();
         target.validate()?;
 
-        if sequence_after_copy != sequence_before_copy {
-            let copied_text = clipboard
-                .get_text()
-                .map_err(|_| CaptureError::CopyUnavailable)?;
+        // Web editors can publish clipboard formats in stages. A sequence
+        // change alone does not mean CF_UNICODETEXT is available yet.
+        if let Some(copied_text) = read_copied_text(
+            sequence_before_copy,
+            sequence_after_copy,
+            || clipboard.get_text().ok(),
+            clipboard_sequence_number,
+        ) {
             let (text, truncated) = normalize_selection(copied_text);
-
             let clipboard_restored = restore_plain_text_if_unchanged(
                 &mut clipboard,
                 previous_plain_text,
                 sequence_after_copy,
             );
-
-            if text.trim().is_empty() {
-                return Err(CaptureError::CopyUnavailable);
-            }
-
             return Ok(CapturedSelection {
                 text,
                 source: SelectionSource::ClipboardCopy,
@@ -343,7 +348,10 @@ fn capture_from_clipboard_copy(
             });
         }
 
-        if !retried_copy && Instant::now() >= retry_at {
+        if !retried_copy
+            && sequence_after_copy == sequence_before_copy
+            && Instant::now() >= retry_at
+        {
             // Do not issue another Copy once the user has switched apps; that
             // could place unrelated content on the clipboard.
             target.validate()?;
@@ -353,9 +361,27 @@ fn capture_from_clipboard_copy(
         }
 
         if Instant::now() >= deadline {
-            return Err(CaptureError::TimedOut);
+            return Err(if sequence_after_copy == sequence_before_copy {
+                CaptureError::TimedOut
+            } else {
+                CaptureError::CopyUnavailable
+            });
         }
     }
+}
+
+// Only accept nonempty text from one consistent, newly published clipboard state.
+fn read_copied_text(
+    before: u32,
+    observed: u32,
+    read_text: impl FnOnce() -> Option<String>,
+    current_sequence: impl FnOnce() -> u32,
+) -> Option<String> {
+    if before == observed {
+        return None;
+    }
+    let text = read_text().filter(|text| !text.trim().is_empty())?;
+    (current_sequence() == observed).then_some(text)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -478,6 +504,49 @@ mod tests {
             editability: Editability::Unknown,
             replacement_id: None,
         }
+    }
+
+    #[test]
+    fn google_docs_empty_proxy_uses_bounded_longer_copy_without_changing_normal_popup_budget() {
+        for policy in [CapturePolicy::BestEffort, CapturePolicy::Required] {
+            let captured = capture_with_policy(
+                policy,
+                |_| Err(CaptureError::GoogleDocsCopyRequired),
+                |budget| {
+                    assert_eq!(
+                        budget,
+                        match policy {
+                            CapturePolicy::BestEffort => Duration::from_millis(600),
+                            CapturePolicy::Required =>
+                                SHORTCUT_RELEASE_TIMEOUT + CLIPBOARD_WAIT_TIMEOUT,
+                        }
+                    );
+                    Ok(selected_text())
+                },
+            )
+            .unwrap();
+            assert_eq!(captured.editability, Editability::Unknown);
+            assert!(captured.replacement_id.is_none());
+        }
+    }
+
+    #[test]
+    fn staged_clipboard_updates_wait_for_text_and_reject_changes_during_read() {
+        assert!(read_copied_text(
+            10,
+            10,
+            || panic!("unchanged clipboard must not be read"),
+            || 10
+        )
+        .is_none());
+        for text in [None, Some("".into()), Some("  \n".into())] {
+            assert!(read_copied_text(10, 11, || text, || 11).is_none());
+        }
+        assert!(read_copied_text(10, 11, || Some("old stage".into()), || 12).is_none());
+        assert_eq!(
+            read_copied_text(10, 12, || Some("  document selection\n".into()), || 12).as_deref(),
+            Some("  document selection\n")
+        );
     }
 
     #[test]

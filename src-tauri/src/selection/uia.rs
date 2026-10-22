@@ -178,6 +178,14 @@ unsafe fn probe_focused(
     if unsafe { focused.CurrentIsPassword() }.is_ok_and(|value| value.as_bool()) {
         return Err(CaptureError::ProtectedField);
     }
+    // Some Chrome versions expose only an unnamed input body inside Docs'
+    // event-target iframe. Pair its specific accessible label with the window
+    // title rather than treating every browser textbox as a document proxy.
+    if unsafe { focused.CurrentName() }.is_ok_and(|name| name.to_string() == "Document content")
+        && google_docs_window_title(&window_title(target))
+    {
+        search.google_docs = true;
+    }
     // Exact compatibility order: focused TextPattern, focused legacy bridge,
     // then ancestor TextPatterns. No whole-document text probes.
     let mut selected = search.observe(
@@ -237,6 +245,10 @@ unsafe fn probe_focused(
         context.editability = unsafe { editability::read(&focused, deadline) };
         context.focus_id = unsafe { editability::runtime_id(&focused) };
     }
+    // A writable keyboard proxy does not prove the canvas document is writable.
+    if search.google_docs {
+        context.editability = Editability::Unknown;
+    }
     if let Some(selection) = selected.as_mut() {
         if matches!(selection.source, SelectionSource::LegacyAccessibility) {
             selection.editability = context.editability;
@@ -260,6 +272,7 @@ struct SelectionSearch {
     empty: bool,
     non_text: bool,
     virtual_editor: bool,
+    google_docs: bool,
 }
 
 impl SelectionSearch {
@@ -294,6 +307,7 @@ impl SelectionSearch {
             ElementSelection::Empty => self.empty = true,
             ElementSelection::NonTextSelection => self.non_text = true,
             ElementSelection::CopyRequired => self.virtual_editor = true,
+            ElementSelection::GoogleDocsCopyRequired => self.google_docs = true,
             ElementSelection::Unavailable => {}
         }
         None
@@ -302,6 +316,8 @@ impl SelectionSearch {
     fn finish(self) -> CaptureResult {
         if self.non_text {
             Err(CaptureError::NonTextSelection)
+        } else if self.google_docs {
+            Err(CaptureError::GoogleDocsCopyRequired)
         } else if self.virtual_editor {
             Err(CaptureError::CopyRequired)
         } else if self.empty {
@@ -317,6 +333,7 @@ enum ElementSelection {
     PositionedText(String, bool, SelectionBounds),
     Empty,
     CopyRequired,
+    GoogleDocsCopyRequired,
     Unavailable,
     NonTextSelection,
 }
@@ -330,9 +347,59 @@ fn is_virtual_editor(class_name: &str) -> bool {
         || (classes.contains(&"inputarea") && classes.contains(&"monaco-mouse-cursor-text"))
 }
 
+fn is_google_docs_editor(class_name: &str, automation_id: &str) -> bool {
+    class_name.split_whitespace().any(|class| {
+        matches!(
+            class,
+            "docs-texteventtarget-iframe"
+                | "docs-texteventtarget-iframe-negative-top"
+                | "kix-appview-editor"
+                | "kix-appview-editor-container"
+        )
+    }) || matches!(automation_id, "docs-editor" | "docs-texteventtarget-iframe")
+}
+
+fn google_docs_window_title(title: &str) -> bool {
+    title.contains(" - Google Docs") || title.contains(" – Google Docs")
+}
+
+fn window_title(target: CaptureTarget) -> String {
+    let mut title = [0u16; 1024];
+    let length = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW(
+            target.window as *mut _,
+            title.as_mut_ptr(),
+            title.len() as i32,
+        )
+    };
+    String::from_utf16_lossy(&title[..length.max(0) as usize])
+}
+
+fn apply_editor_compatibility(
+    result: ElementSelection,
+    virtual_editor: bool,
+    google_docs: bool,
+) -> ElementSelection {
+    match result {
+        ElementSelection::Empty | ElementSelection::Unavailable if google_docs => {
+            ElementSelection::GoogleDocsCopyRequired
+        }
+        ElementSelection::Empty | ElementSelection::Unavailable if virtual_editor => {
+            ElementSelection::CopyRequired
+        }
+        result => result,
+    }
+}
+
 unsafe fn read_element(element: &IUIAutomationElement, deadline: Instant) -> ElementSelection {
-    let virtual_editor = unsafe { element.CurrentClassName() }
-        .is_ok_and(|name| is_virtual_editor(&name.to_string()));
+    let class_name = unsafe { element.CurrentClassName() }
+        .map(|name| name.to_string())
+        .unwrap_or_default();
+    let virtual_editor = is_virtual_editor(&class_name);
+    let automation_id = unsafe { element.CurrentAutomationId() }
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let google_docs = is_google_docs_editor(&class_name, &automation_id);
     // Never use DocumentRange, ValuePattern, or Name as a selection substitute.
     let read = || -> windows::core::Result<ElementSelection> {
         let pattern: IUIAutomationTextPattern =
@@ -390,12 +457,11 @@ unsafe fn read_element(element: &IUIAutomationElement, deadline: Instant) -> Ele
             })
         }
     };
-    match read().unwrap_or(ElementSelection::Unavailable) {
-        ElementSelection::Empty | ElementSelection::Unavailable if virtual_editor => {
-            ElementSelection::CopyRequired
-        }
-        result => result,
-    }
+    apply_editor_compatibility(
+        read().unwrap_or(ElementSelection::Unavailable),
+        virtual_editor,
+        google_docs,
+    )
 }
 
 #[derive(Default)]
@@ -426,6 +492,75 @@ impl SelectionText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_docs_editor_proxies_without_matching_other_browser_controls() {
+        for class in [
+            "docs-texteventtarget-iframe docs-offscreen-z-index",
+            "kix-appview-editor",
+            "kix-appview-editor-container",
+        ] {
+            assert!(is_google_docs_editor(class, ""));
+        }
+        assert!(is_google_docs_editor("", "docs-editor"));
+        for class in [
+            "",
+            "textbox",
+            "docs-title-input",
+            "kix-search-field",
+            "not-kix-appview-editor",
+        ] {
+            assert!(!is_google_docs_editor(class, ""));
+        }
+        assert!(google_docs_window_title(
+            "Test document - Google Docs - Google Chrome"
+        ));
+        assert!(google_docs_window_title(
+            "Test document \u{2013} Google Docs - Microsoft Edge"
+        ));
+        assert!(!google_docs_window_title("Search - Google Chrome"));
+    }
+
+    #[test]
+    fn docs_empty_proxy_overrides_empty_ancestors_but_preserves_accessible_text_and_nontext_guards()
+    {
+        for empty in [ElementSelection::Empty, ElementSelection::Unavailable] {
+            let mut search = SelectionSearch::default();
+            search.observe(
+                apply_editor_compatibility(empty, false, true),
+                SelectionSource::UiAutomation,
+            );
+            search.observe(ElementSelection::Empty, SelectionSource::UiAutomation);
+            assert!(matches!(
+                search.finish(),
+                Err(CaptureError::GoogleDocsCopyRequired)
+            ));
+        }
+        assert!(matches!(
+            apply_editor_compatibility(
+                ElementSelection::Text("selected".into(), false),
+                false,
+                true
+            ),
+            ElementSelection::Text(_, false)
+        ));
+        assert!(matches!(
+            apply_editor_compatibility(ElementSelection::Empty, false, false),
+            ElementSelection::Empty
+        ));
+        let mut search = SelectionSearch {
+            google_docs: true,
+            ..Default::default()
+        };
+        search.observe(
+            ElementSelection::NonTextSelection,
+            SelectionSource::LegacyAccessibility,
+        );
+        assert!(matches!(
+            search.finish(),
+            Err(CaptureError::NonTextSelection)
+        ));
+    }
 
     #[test]
     fn empty_text_pattern_does_not_skip_a_successful_legacy_read() {
