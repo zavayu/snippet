@@ -46,10 +46,32 @@ type Props = {
   onSubmit: (instruction: string) => void;
   onRetry: () => void;
   onStop: () => void;
+  replacementId: number | null;
+  onReplacementUsed: (id: number) => void;
 };
 
-export function ConversationPanel({ conversation, onContinue, onNewConversation, onSubmit, onRetry, onStop }: Props) {
+export function ConversationPanel({ conversation, onContinue, onNewConversation, onSubmit, onRetry, onStop, replacementId, onReplacementUsed }: Props) {
   const [draft, setDraft] = useState("");
+  const [replacing, setReplacing] = useState(false);
+  const [replaceError, setReplaceError] = useState<string | null>(null);
+  useEffect(() => { setReplaceError(null); }, [conversation.conversationId]);
+  const replace = async (text: string) => {
+    if (replacementId == null || replacing) return;
+    setReplacing(true);
+    setReplaceError(null);
+    try {
+      await invoke("replace_selection", { replacementId, text });
+    } catch (error) {
+      setReplaceError(String(error));
+    } finally {
+      onReplacementUsed(replacementId);
+      setReplacing(false);
+    }
+  };
+  const replaceAction = (text: string) => replacementId != null && !replacing && <ResponseAction label="Replace selection" onClick={() => void replace(text)}>
+    <path d="M4 7h12m-3-3 3 3-3 3M20 17H8m3-3-3 3 3 3" />
+  </ResponseAction>;
+
   const input = useRef<HTMLTextAreaElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
@@ -94,12 +116,16 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
         {conversation.expanded && turn.status === "loading" && <p className="text-xs text-zinc-500">Thinking…</p>}
         {turn.status === "stopped" && <p className="mt-2 text-xs text-zinc-500">Response stopped. This turn is not included in follow-up context.</p>}
         {turn.status === "error" && <p role="alert" className="mt-2 text-xs text-amber-200">{turn.error}{turn.response && " This incomplete turn is not included in follow-up context."}</p>}
-        {conversation.expanded && turn.response && !isTurnActive(turn) && <CopyResponse text={turn.response} />}
+        {conversation.expanded && turn.response && !isTurnActive(turn) && <div className="flex items-center gap-1">
+          <CopyResponse text={turn.response} />
+          {!busy && turn.status === "complete" && replaceAction(turn.response)}
+        </div>}
       </article>)}
     </div>
 
     {(!conversation.expanded || (!busy && (last?.status === "error" || last?.status === "stopped"))) && <div className="mt-3 flex flex-wrap items-center gap-1 border-t border-zinc-800 pt-2">
       {!conversation.expanded && last?.response && !busy && <CopyResponse text={last.response} />}
+      {!conversation.expanded && last?.status === "complete" && replaceAction(last.response)}
       {!conversation.expanded && last?.status === "complete" && <ResponseAction label="Continue conversation" onClick={onContinue}>
         <path d="M8 18H5l-3 3V6a3 3 0 0 1 3-3h14a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H8Z" />
         <path d="M7 8h10M7 12h7" />
@@ -115,6 +141,8 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
         <path d="M12 8v8m-4-4h8" />
       </ResponseAction>}
     </div>}
+
+    {replaceError && <p role="alert" className="mt-2 text-xs text-amber-200">{replaceError}</p>}
 
     {conversation.expanded && <form className="mt-2 flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950/50 p-2"
       onSubmit={(event) => { event.preventDefault(); submit(); }}>

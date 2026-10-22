@@ -4,8 +4,10 @@
 //! Windows UI Automation reads selections without touching the clipboard.
 //! Unsupported providers fall back to the existing clipboard reader.
 
+mod replacement;
 #[cfg(target_os = "windows")]
 mod uia;
+pub use replacement::replace;
 
 use std::time::{Duration, Instant};
 
@@ -59,6 +61,21 @@ pub struct SelectionBounds {
     pub last: SelectionRect,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Editability {
+    Editable,
+    ReadOnly,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(super) struct CaptureContext {
+    pub editability: Editability,
+    pub focus_id: Option<Vec<i32>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapturedSelection {
@@ -67,6 +84,8 @@ pub struct CapturedSelection {
     pub truncated: bool,
     pub clipboard_restored: bool,
     pub bounds: Option<SelectionBounds>,
+    pub editability: Editability,
+    pub replacement_id: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -221,12 +240,21 @@ fn capture_selection(
     #[cfg(target_os = "windows")]
     {
         target.validate()?;
-        let captured = capture_with_policy(
+        let mut context = CaptureContext::default();
+        let mut captured = capture_with_policy(
             policy,
-            |budget| uia::capture(target, budget),
+            |budget| {
+                let (result, captured_context) = uia::capture(target, budget);
+                context = captured_context;
+                result
+            },
             |budget| ClipboardCopyReader.capture(target, budget),
         )?;
         target.validate()?;
+        if matches!(captured.source, SelectionSource::ClipboardCopy) {
+            captured.editability = context.editability;
+        }
+        captured.replacement_id = replacement::remember(target, &captured, context);
         Ok(captured)
     }
     #[cfg(not(target_os = "windows"))]
@@ -310,6 +338,8 @@ fn capture_from_clipboard_copy(
                 truncated,
                 clipboard_restored,
                 bounds: None,
+                editability: Editability::Unknown,
+                replacement_id: None,
             });
         }
 
@@ -445,6 +475,8 @@ mod tests {
             truncated: false,
             clipboard_restored: true,
             bounds: None,
+            editability: Editability::Unknown,
+            replacement_id: None,
         }
     }
 

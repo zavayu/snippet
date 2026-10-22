@@ -519,6 +519,7 @@ macro_rules! snippet_command_handler {
             read_screen,
             cancel_generation,
             copy_response,
+            replace_selection,
             discard_image_capture,
             complete_region_capture,
             cancel_region_capture,
@@ -543,6 +544,7 @@ macro_rules! snippet_command_handler {
             read_screen,
             cancel_generation,
             copy_response,
+            replace_selection,
             discard_image_capture,
             complete_region_capture,
             cancel_region_capture,
@@ -1027,6 +1029,53 @@ fn read_screen(
 #[tauri::command]
 fn cancel_generation(generation_state: State<GenerationState>) {
     generation_state.cancel();
+}
+
+#[tauri::command]
+async fn replace_selection(
+    app: AppHandle,
+    replacement_id: u64,
+    text: String,
+) -> Result<(), String> {
+    let reservation = {
+        let install = app.state::<UpdateInstallState>();
+        let installing = install
+            .0
+            .lock()
+            .map_err(|_| "Update state is unavailable.")?;
+        if *installing {
+            return Err("Wait for the update to finish.".into());
+        }
+        let generation = app.state::<GenerationState>();
+        if generation
+            .0
+            .active
+            .lock()
+            .map_err(|_| "Generation state is unavailable.")?
+            .is_some()
+        {
+            return Err("Wait for the response to finish before replacing text.".into());
+        }
+        let capture = app.state::<CaptureState>().0.clone();
+        if capture.swap(true, Ordering::AcqRel) {
+            return Err("Another capture or replacement is in progress.".into());
+        }
+        CaptureReservation(capture)
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservation = reservation;
+        let window = app
+            .get_webview_window("main")
+            .ok_or("Snippet's window is unavailable.")?;
+        window.hide().map_err(|error| error.to_string())?;
+        let result = selection::replace(replacement_id, &text);
+        if result.is_err() {
+            show_popup(&app);
+        }
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

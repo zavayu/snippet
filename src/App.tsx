@@ -42,6 +42,8 @@ type CapturedSelection = {
   truncated: boolean;
   clipboardRestored: boolean;
   bounds: SelectionBounds | null;
+  editability: "editable" | "read-only" | "unknown";
+  replacementId: number | null;
 };
 
 type ShortcutConfig = {
@@ -474,6 +476,8 @@ function App() {
           truncated: false,
           clipboardRestored: true,
           bounds: null,
+          editability: "unknown",
+          replacementId: null,
         };
         const pendingIntent = pendingOcrIntentRef.current;
         pendingOcrIntentRef.current = null;
@@ -1428,6 +1432,8 @@ function App() {
           {!isSettingsOpen && hasSubmittedPrompt && (
             <ConversationPanel
               conversation={conversation}
+              replacementId={selection?.editability === "editable" && !selection.truncated ? selection.replacementId : null}
+              onReplacementUsed={(id) => setSelection((current) => current?.replacementId === id ? { ...current, replacementId: null } : current)}
               onContinue={() => dispatchConversation({ type: "expand" })}
               onNewConversation={startNewConversation}
               onSubmit={(instruction) => void submitTurn("follow-up", instruction, { instruction })}
@@ -1472,6 +1478,7 @@ function App() {
                   {selection.source === "ui-automation" ? "UI Automation"
                     : selection.source === "legacy-accessibility" ? "IAccessible"
                     : selection.source === "clipboard-copy" ? "Clipboard fallback" : "OCR"}
+                  {` / ${selection.editability === "editable" ? "Editable" : selection.editability === "read-only" ? "Read-only" : "Unknown"}`}
                 </span>
               </div>
               {isSelectionExpanded && (

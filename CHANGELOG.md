@@ -4,6 +4,10 @@
 
 ### Improved
 
+- Detect editable, read-only, and unknown selection sources through Windows accessibility.
+- Offer Replace selection for completed responses only when editability and source
+  identity are confirmed, and recheck the target and selected text before insertion.
+
 - Default screen and region text extraction to local Windows OCR using original
   capture pixels, with guidance when OCR language packs are missing.
 - Add a Windows/Ollama OCR engine selector in Settings and preserve Ollama model

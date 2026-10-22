@@ -121,6 +121,14 @@ Accessibility support varies by application. Elevated applications may remain
 inaccessible. The copy fallback preserves only prior plain text, not images,
 files, or rich formatting; full clipboard preservation is not yet implemented.
 
+When Windows accessibility confirms the selected text is editable, completed
+responses offer **Replace selection** next to Copy. Replacement returns focus to
+that application and verifies the original control, selected text, and editability
+before inserting the response. Each capture permits one replacement attempt;
+recapture after editing the source or attempting replacement. Read-only, unknown,
+OCR, and truncated selections keep Copy available without offering Replace.
+Development diagnostics also show Editable, Read-only, or Unknown.
+
 ## Getting started
 
 From the project directory:

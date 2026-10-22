@@ -4,11 +4,11 @@ import { describe, expect, it } from "vitest";
 import type { ConversationState } from "../conversation";
 import { ConversationPanel } from "./ConversationPanel";
 
-function render(conversation: ConversationState) {
+function render(conversation: ConversationState, replacementId: number | null = null) {
   const noop = () => {};
   return renderToStaticMarkup(createElement(ConversationPanel, {
     conversation, onContinue: noop, onNewConversation: noop,
-    onSubmit: noop, onRetry: noop, onStop: noop,
+    onSubmit: noop, onRetry: noop, onStop: noop, replacementId, onReplacementUsed: noop,
   }));
 }
 
@@ -18,6 +18,22 @@ const completed: ConversationState = {
 };
 
 describe("conversation interface", () => {
+  it("offers replacement only with an authorized selection and a completed response", () => {
+    expect(render(completed)).not.toContain('aria-label="Replace selection"');
+    expect(render(completed, 42)).toContain('aria-label="Replace selection"');
+    expect(render({ ...completed, expanded: true }, 42)).toContain('aria-label="Replace selection"');
+    for (const status of ["loading", "streaming", "stopped", "error"] as const) {
+      expect(render({ ...completed, turns: [{ ...completed.turns[0], status }] }, 42))
+        .not.toContain('aria-label="Replace selection"');
+    }
+  });
+
+  it("hides replacement on earlier turns while a follow-up is streaming", () => {
+    expect(render({ ...completed, expanded: true, turns: [...completed.turns, {
+      id: 2, prompt: "Why?", response: "Partial", kind: "follow-up", status: "streaming",
+    }] }, 42)).not.toContain('aria-label="Replace selection"');
+  });
+
   it("keeps the first answer compact and offers all three response actions", () => {
     const html = render(completed);
     expect(html).toContain("<strong>answer</strong>");

@@ -4,6 +4,7 @@
 //! or creating an unbounded number of threads. Late results are discarded; the
 //! worker never sends keystrokes or touches the clipboard.
 
+mod editability;
 mod geometry;
 mod legacy;
 
@@ -26,8 +27,8 @@ use windows::Win32::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
 
 use super::{
-    CaptureError, CaptureTarget, CapturedSelection, SelectionBounds, SelectionSource,
-    MAX_SELECTION_CHARS,
+    CaptureContext, CaptureError, CaptureTarget, CapturedSelection, Editability, SelectionBounds,
+    SelectionSource, MAX_SELECTION_CHARS,
 };
 
 const PROVIDER_TIMEOUT_MS: u32 = 100;
@@ -39,12 +40,12 @@ type CaptureResult = Result<Option<CapturedSelection>, CaptureError>;
 struct Request {
     target: CaptureTarget,
     deadline: Instant,
-    reply: mpsc::SyncSender<CaptureResult>,
+    reply: mpsc::SyncSender<(CaptureResult, CaptureContext)>,
 }
 
 static WORKER: OnceLock<Option<mpsc::SyncSender<Request>>> = OnceLock::new();
 
-pub(super) fn capture(target: CaptureTarget, timeout: Duration) -> CaptureResult {
+pub(super) fn capture(target: CaptureTarget, timeout: Duration) -> (CaptureResult, CaptureContext) {
     let Some(worker) = WORKER.get_or_init(|| {
         let (sender, receiver) = mpsc::sync_channel::<Request>(1);
         thread::Builder::new()
@@ -54,24 +55,34 @@ pub(super) fn capture(target: CaptureTarget, timeout: Duration) -> CaptureResult
                     if Instant::now() >= request.deadline {
                         continue;
                     }
-                    let result = probe(request.target, request.deadline);
-                    let _ = request.reply.try_send(result);
+                    let mut context = CaptureContext::default();
+                    let result = probe(request.target, request.deadline, &mut context);
+                    let _ = request.reply.try_send((result, context));
                 }
             })
             .ok()
             .map(|_| sender)
     }) else {
-        return Ok(None);
+        return (Ok(None), CaptureContext::default());
     };
 
-    request_selection(worker, target, timeout)
+    request_selection_context(worker, target, timeout)
 }
 
+#[cfg(test)]
 fn request_selection(
     worker: &mpsc::SyncSender<Request>,
     target: CaptureTarget,
     timeout: Duration,
 ) -> CaptureResult {
+    request_selection_context(worker, target, timeout).0
+}
+
+fn request_selection_context(
+    worker: &mpsc::SyncSender<Request>,
+    target: CaptureTarget,
+    timeout: Duration,
+) -> (CaptureResult, CaptureContext) {
     let (reply, receiver) = mpsc::sync_channel(1);
     let deadline = Instant::now() + timeout;
     if worker
@@ -82,12 +93,12 @@ fn request_selection(
         })
         .is_err()
     {
-        return Ok(None);
+        return (Ok(None), CaptureContext::default());
     }
     // A timeout is provider unavailability, not evidence of an empty selection.
     receiver
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .unwrap_or(Ok(None))
+        .unwrap_or((Ok(None), CaptureContext::default()))
 }
 
 struct ComApartment;
@@ -98,7 +109,7 @@ impl Drop for ComApartment {
     }
 }
 
-fn probe(target: CaptureTarget, deadline: Instant) -> CaptureResult {
+fn probe(target: CaptureTarget, deadline: Instant, context: &mut CaptureContext) -> CaptureResult {
     target.validate()?;
     // This thread owns no windows. Balance both S_OK and S_FALSE with Uninitialize.
     if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
@@ -106,10 +117,14 @@ fn probe(target: CaptureTarget, deadline: Instant) -> CaptureResult {
     }
     let _apartment = ComApartment;
     // All interfaces are dropped before the apartment guard, including on errors.
-    unsafe { probe_initialized(target, deadline) }
+    unsafe { probe_initialized(target, deadline, context) }
 }
 
-unsafe fn probe_initialized(target: CaptureTarget, deadline: Instant) -> CaptureResult {
+unsafe fn probe_initialized(
+    target: CaptureTarget,
+    deadline: Instant,
+    context: &mut CaptureContext,
+) -> CaptureResult {
     let mut search = SelectionSearch::default();
     let mut selected = None;
     let automation: windows::core::Result<IUIAutomation2> =
@@ -125,7 +140,8 @@ unsafe fn probe_initialized(target: CaptureTarget, deadline: Instant) -> Capture
             .is_ok()
             && Instant::now() < deadline
         {
-            selected = unsafe { probe_focused(&automation, target, deadline, &mut search) }?;
+            selected =
+                unsafe { probe_focused(&automation, target, deadline, &mut search, context) }?;
         }
     }
     // Like Selection Hook, direct OBJID_CLIENT access remains available even if
@@ -149,6 +165,7 @@ unsafe fn probe_focused(
     target: CaptureTarget,
     deadline: Instant,
     search: &mut SelectionSearch,
+    context: &mut CaptureContext,
 ) -> CaptureResult {
     let focused = match unsafe { automation.GetFocusedElement() } {
         Ok(element) => element,
@@ -167,6 +184,9 @@ unsafe fn probe_focused(
         unsafe { read_element(&focused, deadline) },
         SelectionSource::UiAutomation,
     );
+    if let Some(selection) = selected.as_mut() {
+        selection.editability = unsafe { editability::read(&focused, deadline) };
+    }
     if selected.is_none() && Instant::now() < deadline {
         target.validate()?;
         selected = search.observe(
@@ -196,7 +216,8 @@ unsafe fn probe_focused(
                     unsafe { read_element(&element, deadline) },
                     SelectionSource::UiAutomation,
                 );
-                if selected.is_some() {
+                if let Some(selection) = selected.as_mut() {
+                    selection.editability = unsafe { editability::read(&element, deadline) };
                     break;
                 }
             }
@@ -211,6 +232,15 @@ unsafe fn probe_focused(
         .is_ok_and(|same| same.as_bool())
     {
         return Err(CaptureError::FocusChanged);
+    }
+    if Instant::now() < deadline {
+        context.editability = unsafe { editability::read(&focused, deadline) };
+        context.focus_id = unsafe { editability::runtime_id(&focused) };
+    }
+    if let Some(selection) = selected.as_mut() {
+        if matches!(selection.source, SelectionSource::LegacyAccessibility) {
+            selection.editability = context.editability;
+        }
     }
     Ok(selected)
 }
@@ -246,6 +276,8 @@ impl SelectionSearch {
                     truncated,
                     clipboard_restored: true,
                     bounds: None,
+                    editability: Editability::Unknown,
+                    replacement_id: None,
                 })
             }
             ElementSelection::PositionedText(text, truncated, bounds) => {
@@ -255,6 +287,8 @@ impl SelectionSearch {
                     truncated,
                     clipboard_restored: true,
                     bounds: Some(bounds),
+                    editability: Editability::Unknown,
+                    replacement_id: None,
                 })
             }
             ElementSelection::Empty => self.empty = true,
@@ -506,7 +540,7 @@ mod tests {
         let request = requests.recv().unwrap();
         assert!(request
             .reply
-            .try_send(Err(CaptureError::NoSelection))
+            .try_send((Err(CaptureError::NoSelection), CaptureContext::default()))
             .is_err());
     }
 
@@ -536,7 +570,7 @@ mod tests {
                 .recv()
                 .unwrap()
                 .reply
-                .send(Err(CaptureError::NoSelection))
+                .send((Err(CaptureError::NoSelection), CaptureContext::default()))
                 .unwrap();
         });
         assert!(matches!(
@@ -581,7 +615,7 @@ mod tests {
     #[test]
     fn reads_only_selected_text_from_a_real_windows_edit_control() {
         use windows::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::Controls::EM_SETSEL;
+        use windows_sys::Win32::UI::Controls::{EM_SETREADONLY, EM_SETSEL};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW,
             GetWindowThreadProcessId, PostThreadMessageW, SendMessageW, TranslateMessage,
@@ -658,6 +692,19 @@ mod tests {
             unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.unwrap();
         let element =
             unsafe { automation.ElementFromHandle(HWND(control.hwnd as *mut _)) }.unwrap();
+        assert_eq!(
+            unsafe { editability::read(&element, Instant::now() + Duration::from_secs(3)) },
+            Editability::Editable
+        );
+        let first_id =
+            unsafe { editability::runtime_id(&element) }.expect("EDIT has a runtime identity");
+        assert_eq!(Some(first_id), unsafe { editability::runtime_id(&element) });
+        unsafe { SendMessageW(control.hwnd as *mut _, EM_SETREADONLY, 1, 0) };
+        assert_eq!(
+            unsafe { editability::read(&element, Instant::now() + Duration::from_secs(3)) },
+            Editability::ReadOnly
+        );
+        unsafe { SendMessageW(control.hwnd as *mut _, EM_SETREADONLY, 0, 0) };
         match unsafe { read_element(&element, Instant::now() + Duration::from_secs(3)) } {
             ElementSelection::Text(text, truncated)
             | ElementSelection::PositionedText(text, truncated, _) => {
