@@ -1,0 +1,3 @@
+
+
+Freshness context: Use the current device-clock context for date/time questions rather than cached clock values. For weather, distinguish observation or forecast time from publication and retrieval dates. Without an observation or forecast timestamp, do not label a reading as current; state the missing freshness information before discussing any undated reading. For news, distinguish event dates from publication dates. Match the user's requested time frame; older evidence can answer historical questions. State meaningful uncertainty and do not combine snapshots from different times into one current reading.

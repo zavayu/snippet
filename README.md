@@ -133,6 +133,12 @@ Search failures and limits are shown as errors, without substituting an answer
 that was not researched. Source excerpts are partial evidence, and a citation
 link does not guarantee that the model's interpretation is correct.
 
+Search excerpts can contain cached clock readings or old weather conditions.
+Snippet supplies the current UTC and device-local timestamp to the model on every
+turn, and can answer time questions from that context. It has no dedicated weather
+feed, so weather accuracy still depends on suitable dated evidence. Evidence includes its retrieval timestamp,
+which is distinct from a page's publication date and an observation's timestamp.
+
 ## Conversations and replacement
 
 After an answer finishes, choose **Continue conversation** to ask a follow-up.

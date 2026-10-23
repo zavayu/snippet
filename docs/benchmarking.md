@@ -128,7 +128,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example evaluate_search -- gemm
 ```
 
 The evaluation uses Snippet's actual planner and answer prompts with synthetic
-inputs. It makes no web requests. It checks 28 routing cases twice, including
+inputs. It makes no web requests. It checks 30 routing cases twice, including
 capability questions, stable explanations, text transformations with search-related
 reference text, current facts, polite lookup requests, and follow-ups. A routing
 mismatch or invalid decision makes the evaluation fail.
@@ -140,3 +140,16 @@ These answer samples are not automatically scored for semantic correctness.
 Passing this finite set is a regression check for the selected model, not a
 guarantee for every wording or another model. Use a fresh output filename when
 comparing model or prompt changes; the JSON report is overwritten on each run.
+
+For freshness handling, use the synthetic stale-clock, weather, and event-date
+fixtures. This also makes no web requests and saves answers for human review:
+
+```powershell
+cargo run --manifest-path src-tauri/Cargo.toml --example evaluate_freshness -- gemma4:e4b logs/freshness-evaluation.json
+```
+
+The clock cases check model answers against the injected current UTC/device-local
+timestamps, with and without stale search excerpts. Weather and event cases check
+how the model handles incomplete evidence; they do not add a live weather provider.
+Review time-zone conversions against the captured timestamp, since the model
+still performs those conversions.

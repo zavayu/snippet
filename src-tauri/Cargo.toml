@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 arboard = "3"
 async-trait = "0.1"
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }

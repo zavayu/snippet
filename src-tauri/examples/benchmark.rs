@@ -154,9 +154,12 @@ async fn run_case(
             grounding.finish();
         } else {
             trace.mark("search_skipped", json!({}));
-            messages[0].content.push_str(" No new web search was performed for this turn. Answer from the provided context and your knowledge; do not claim to have searched or checked current sources.");
+            messages[0]
+                .content
+                .push_str(&prompt::templates::text(prompt::templates::NO_SEARCH));
         }
     }
+    prompt::set_web_search_context(&mut messages, case != "direct");
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let request = GenerationRequest {
         model: model.into(),

@@ -27,6 +27,14 @@ body {
   will-change: opacity;
 }
 
+.initial-prompt {
+  scrollbar-width: none;
+}
+
+.initial-prompt::-webkit-scrollbar {
+  display: none;
+}
+
 .popup-surface--hidden {
   opacity: 0;
 }

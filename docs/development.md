@@ -39,6 +39,8 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 | `src-tauri/src/search_credentials.rs` | Windows Credential Manager API key storage |
 | `src-tauri/src/ocr.rs` | Native Windows OCR |
 | `src-tauri/src/prompt.rs` | Provider-neutral prompt construction |
+| `src-tauri/prompts/` and `src-tauri/src/prompt/templates.rs` | Bundled instruction templates and literal substitution |
+| `src-tauri/src/prompt/inspector.rs` | Opt-in development request snapshots |
 | `src-tauri/src/provider/` | Provider contract and Ollama HTTP streaming |
 | `src-tauri/src/conversation.rs` | Backend conversation context and turn lifecycle |
 | `src-tauri/src/settings.rs` | Persisted settings and shortcut configuration |
@@ -84,9 +86,43 @@ To enable development inspection controls, add an ignored
 VITE_SHOW_DEVELOPMENT_TOOLS=true
 ```
 
-These controls show selected-text and generated-prompt previews, the capture
-source, and Editable / Read-only / Unknown status. They are excluded from
+These controls show selected-text and base-prompt previews, the request inspector,
+the capture source, and Editable / Read-only / Unknown status. They are excluded from
 production builds even if the environment flag is enabled.
+
+## Inspecting model requests
+
+All instruction templates are documented in
+[`src-tauri/prompts/README.md`](../src-tauri/prompts/README.md). They are bundled
+into the Rust executable; rebuild after changing one.
+
+Enable development tools as above and restart `npm run tauri dev`. Expand
+**Model Request Inspector**, check **Capture requests**, then send a prompt.
+The inspector captures the serialized body immediately before each Ollama HTTP
+request, showing the model, options, schemas, and final messages for:
+
+- `search_decision`: automatic search routing;
+- `query_planning`: explicit Research query planning;
+- `answer_generation`: answer messages including runtime context and any evidence;
+- `ocr`: Ollama OCR (native Windows OCR makes no model request).
+
+Expand a recorded request to inspect its JSON. While open, the panel refreshes
+every two seconds; **Refresh** also reads immediately. These are request attempts,
+not proof of server receipt or success. The older **Base Prompt Preview** shows
+only the initial prompt, before runtime context, history, and grounding.
+
+Capture starts disabled and keeps the most recent ten requests in memory only.
+It includes selected text, conversation history, and web evidence; image arrays
+retain their count but replace payloads with `<image data omitted>`. Bodies over
+256 KiB after image removal are explicitly omitted. **Clear** removes the history;
+turning capture off clears it and stops collection. Restarting the app also clears
+it. Closing the inspector or opening Settings leaves capture running until it is
+disabled. It does not write prompts to timing traces or disk.
+
+The capture commands and storage are compiled only into debug builds. Release
+recording calls are no-ops. Disabled capture skips serialization; no network
+requests or model calls are added by the inspector. Timing benchmarks remain
+separate; see [benchmarking](benchmarking.md).
 
 ## Selection capture behavior
 

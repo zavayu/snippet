@@ -37,6 +37,7 @@ use tauri::{PhysicalPosition, PhysicalSize, Runtime, WebviewUrl, WebviewWindowBu
 use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
 use crate::conversation::{Conversation, TurnIdentity};
+#[cfg(debug_assertions)]
 use crate::prompt::ChatMessage;
 use crate::{
     prompt::{PromptBuilder, PromptRequest, QuickAction},
@@ -518,6 +519,18 @@ fn preview_prompt(request: PromptRequest) -> Result<Vec<ChatMessage>, String> {
 }
 
 #[cfg(debug_assertions)]
+#[tauri::command]
+fn configure_request_inspector(enabled: bool) -> Result<(), String> {
+    prompt::inspector::configure(enabled)
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn read_request_inspector(clear: bool) -> Result<serde_json::Value, String> {
+    prompt::inspector::read(clear)
+}
+
+#[cfg(debug_assertions)]
 macro_rules! snippet_command_handler {
     () => {
         tauri::generate_handler![
@@ -539,6 +552,8 @@ macro_rules! snippet_command_handler {
             cancel_region_capture,
             retry_selection_capture,
             preview_prompt,
+            configure_request_inspector,
+            read_request_inspector,
         ]
     };
 }
@@ -949,9 +964,15 @@ fn stream_conversation(
                 } else {
                     provider_trace.mark("search_skipped", serde_json::json!({}));
                     progress("answering", None, previous_sources);
-                    request.messages[0].content.push_str(" No new web search was performed for this turn. Answer from the provided context and your knowledge; do not claim to have searched or checked current sources.");
+                    request.messages[0]
+                        .content
+                        .push_str(&crate::prompt::templates::text(
+                            crate::prompt::templates::NO_SEARCH,
+                        ));
                 }
             }
+            // Refresh after planning/retrieval so the clock is current when answering.
+            crate::prompt::set_web_search_context(&mut request.messages, web_search_enabled);
             provider
                 .stream_generation(request, cancellation, event_sender)
                 .await

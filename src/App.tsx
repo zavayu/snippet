@@ -14,10 +14,12 @@ import {
 } from "@tauri-apps/api/window";
 import "./App.css";
 import { SHOW_DEVELOPMENT_TOOLS } from "./config";
+import { RequestInspector } from "./components/RequestInspector";
 import { UpdatesPanel } from "./components/UpdatesPanel";
 import { updateController, useUpdates } from "./useUpdates";
 import { conversationReducer, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
 import { ConversationPanel } from "./components/ConversationPanel";
+import { handlePromptKeyDown } from "./promptKeyboard";
 import { popupPosition, type SelectionBounds } from "./popupPosition";
 
 const POPUP_WIDTH = 510;
@@ -254,7 +256,8 @@ function App() {
     imageId: number,
     source: ImageCaptureEvent["source"],
   ) => Promise<void> | null>(null);
-  const initialInputRef = useRef<HTMLInputElement>(null);
+  const initialInputRef = useRef<HTMLTextAreaElement>(null);
+  const [initialInputHeight, setInitialInputHeight] = useState(0);
 
   const showDevelopmentPreviews = SHOW_DEVELOPMENT_TOOLS;
   const currentTurn = conversation.turns[conversation.turns.length - 1];
@@ -262,6 +265,13 @@ function App() {
   const isGenerating = isTurnActive(currentTurn);
   const updates = useUpdates(settings?.config.automaticUpdates ?? false);
   const hasSubmittedPrompt = conversation.turns.length > 0;
+  useLayoutEffect(() => {
+    const input = initialInputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 128)}px`;
+    setInitialInputHeight(input.getBoundingClientRect().height);
+  }, [customInstruction, hasSubmittedPrompt, isSettingsOpen]);
   const availableModels = providerStatus && providerStatus.state !== "unavailable"
     ? providerStatus.models
     : [];
@@ -609,6 +619,7 @@ function App() {
   }, [
     popupOpenSequence,
     sourcesLayoutRevision,
+    initialInputHeight,
     conversation,
     captureState,
     captureNotice,
@@ -903,7 +914,7 @@ function App() {
               }
             }}
           >
-            <div data-tauri-drag-region className="flex shrink-0 items-center gap-2">
+            <div data-tauri-drag-region className={`flex shrink-0 items-center gap-2 ${!isSettingsOpen && !hasSubmittedPrompt ? "mt-[5px] self-start" : ""}`}>
               <img data-tauri-drag-region src="/snippet-icon.png" alt="Snippet" draggable={false} width={32} height={32} className="size-8 object-contain" />
             </div>
             {isSettingsOpen && (
@@ -920,13 +931,21 @@ function App() {
                   void startGeneration();
                 }}
               >
-                <input
+                <textarea
                   ref={initialInputRef}
                   aria-label="Ask about the selection"
-                  className="w-full bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
+                  title="Enter to send; Shift+Space or Shift+Enter for a new line"
+                  className="initial-prompt block max-h-32 w-full resize-none overflow-x-hidden overflow-y-auto bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
                   placeholder={selection || image ? "Ask about this…" : "Ask me anything"}
-                  type="text"
+                  rows={1}
                   value={customInstruction}
+                  onKeyDown={(event) => handlePromptKeyDown(event, (value) => {
+                    setCustomInstruction(value);
+                    lastIntentRef.current = null;
+                    setPromptPreview(null);
+                    setPromptPreviewError(null);
+                    setIsPromptPreviewExpanded(false);
+                  }, () => void startGeneration())}
                   onChange={(event) => {
                     setCustomInstruction(event.target.value);
                     lastIntentRef.current = null;
@@ -1556,7 +1575,7 @@ function App() {
                   }}
                 >
                   <span aria-hidden="true">{isPromptPreviewExpanded ? "−" : "+"}</span>
-                  Prompt Preview
+                  Base Prompt Preview
                 </button>
                 {isPromptPreviewExpanded && (
                   <div className="mt-3">
@@ -1577,6 +1596,12 @@ function App() {
                   </div>
                 )}
               </section>
+            </div>
+          )}
+
+          {showDevelopmentPreviews && (
+            <div hidden={isSettingsOpen}>
+              <RequestInspector onLayoutChange={() => setSourcesLayoutRevision((revision) => revision + 1)} />
             </div>
           )}
 

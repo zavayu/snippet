@@ -1,0 +1,1 @@
+Extract the readable content from this screenshot. Preserve paragraphs, code, tables, and mathematical notation when possible. Return only the extracted content in Markdown; do not describe the image or add commentary.

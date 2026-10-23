@@ -4299,6 +4299,7 @@ dependencies = [
  "arboard",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "futures-util",
  "image",
  "reqwest 0.12.28",

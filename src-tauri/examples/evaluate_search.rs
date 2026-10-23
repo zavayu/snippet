@@ -72,6 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     runtime.block_on(async {
         let cases = [
+            ("What time is it in Dallas, TX?", "", false, false),
+            ("What time is it in UTC?", "", false, false),
             ("What can you do?", "", false, false),
             ("Can you search the web?", "", false, false),
             ("Do you have internet access?", "", false, false),
