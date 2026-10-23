@@ -15,7 +15,7 @@ beside your work and streams an answer from Ollama. Explain a passage, summarize
 a section, refine a draft, or keep the conversation going without switching apps.
 
 <p align="center">
-  <img src="docs/assets/snippet-demo.gif" alt="Snippet explaining selected text in a Google Doc" width="800">
+  <img src="docs/assets/snippet-demo.gif?" alt="Snippet explaining selected text in a Google Doc" width="800">
 </p>
 
 ## What you can do
