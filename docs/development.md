@@ -151,6 +151,10 @@ proxy is not evidence that the canvas document is editable. Replacement requires
 a complete selection, confirmed editability, and a stable focused-control
 identity. One-use tokens bind the original window, control, and selected text;
 replacement rechecks those conditions before inserting a response.
+Single-line responses use Unicode keyboard input. Multiline responses use a
+plain-text clipboard paste with Windows line endings, preserving paragraph breaks
+without simulating Enter. The response remains on the clipboard because the target
+editor may consume the paste asynchronously.
 
 ## Research pipeline
 

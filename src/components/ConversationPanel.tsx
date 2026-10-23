@@ -160,11 +160,11 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
     {conversation.expanded && <form className="mt-2 flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950/50 p-2"
       onSubmit={(event) => { event.preventDefault(); submit(); }}>
       <textarea ref={input} aria-label="Follow-up question" placeholder="Ask a follow-up…" rows={2}
-        title="Enter to send; Shift+Space or Shift+Enter for a new line"
+        title="Enter to send; Shift+Enter for a new line"
         className="max-h-32 min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-sm text-zinc-100 outline-none placeholder:text-zinc-500 disabled:opacity-50"
         value={draft} disabled={!hasCompletedTurn}
         onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => handlePromptKeyDown(event, setDraft, submit)} />
+        onKeyDown={(event) => handlePromptKeyDown(event, submit)} />
       <button type={busy ? "button" : "submit"} aria-label={busy ? "Stop response" : "Send message"} title={busy ? "Stop response" : "Send message"}
         className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-violet-500 text-white transition-colors hover:bg-violet-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400 disabled:cursor-not-allowed disabled:opacity-40"
         disabled={!busy && (!hasCompletedTurn || !draft.trim())}

@@ -84,7 +84,7 @@ pub fn replace(id: u64, text: &str) -> Result<(), String> {
             return Err(changed());
         }
         snapshot.target.validate().map_err(|e| e.user_message())?;
-        send_text(text)?;
+        send_text(snapshot.target, text)?;
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -112,10 +112,8 @@ fn matches_snapshot(
 }
 
 #[cfg(target_os = "windows")]
-fn send_text(text: &str) -> Result<(), String> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    };
+fn send_text(target: CaptureTarget, text: &str) -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, KEYEVENTF_UNICODE};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
@@ -125,20 +123,57 @@ fn send_text(text: &str) -> Result<(), String> {
     {
         return Err("Release the modifier keys, select the text again, and retry.".into());
     }
-    // A single Unicode input batch replaces the highlighted text without touching
-    // the clipboard or issuing Enter shortcuts that could submit a chat message.
-    let normalized = text
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\n', "\r");
+    if text.contains(['\r', '\n']) {
+        // Unicode carriage-return events are not a portable way to insert line
+        // breaks: editors may ignore them or handle them as typed Enter input.
+        // Paste the whole response as plain text instead. Leave it on the
+        // clipboard because browsers can consume paste asynchronously; restoring
+        // the previous contents after SendInput can paste the wrong text.
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|_| "Could not open the clipboard. Use Copy instead.".to_owned())?;
+        clipboard
+            .set_text(windows_paste_text(text))
+            .map_err(|_| "Could not prepare the replacement text. Use Copy instead.".to_owned())?;
+        target.validate().map_err(|error| error.user_message())?;
+        let inputs = paste_inputs();
+        return send_inputs(&inputs);
+    }
+    // Single-line responses retain clipboard-free Unicode insertion.
     let mut inputs = Vec::new();
-    for unit in normalized.encode_utf16() {
+    for unit in text.encode_utf16() {
         for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
             let mut input = super::keyboard_input(0, flags);
             input.Anonymous.ki.wScan = unit;
             inputs.push(input);
         }
     }
+    target.validate().map_err(|error| error.user_message())?;
+    send_inputs(&inputs)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_paste_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n")
+}
+
+#[cfg(target_os = "windows")]
+fn paste_inputs() -> [windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT; 4] {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_CONTROL, VK_V};
+    [
+        super::keyboard_input(VK_CONTROL, 0),
+        super::keyboard_input(VK_V, 0),
+        super::keyboard_input(VK_V, KEYEVENTF_KEYUP),
+        super::keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn send_inputs(
+    inputs: &[windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT],
+) -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SendInput;
     let sent = unsafe {
         SendInput(
             inputs.len() as u32,
@@ -157,6 +192,37 @@ fn send_text(text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::selection::SelectionSource;
+    #[test]
+    fn paste_preserves_paragraphs_indentation_unicode_and_trailing_newlines() {
+        assert_eq!(
+            windows_paste_text("First\n\n\tIndented 🦀\r\nLast\r"),
+            "First\r\n\r\n\tIndented 🦀\r\nLast\r\n"
+        );
+        assert_eq!(windows_paste_text("a\r\nb"), "a\r\nb");
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn multiline_paste_uses_one_shortcut_and_releases_both_keys() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_CONTROL, VK_V};
+        let events: Vec<_> = paste_inputs()
+            .iter()
+            .map(|input| unsafe {
+                let key = input.Anonymous.ki;
+                (key.wVk, key.wScan, key.dwFlags)
+            })
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (VK_CONTROL, 0, 0),
+                (VK_V, 0, 0),
+                (VK_V, 0, KEYEVENTF_KEYUP),
+                (VK_CONTROL, 0, KEYEVENTF_KEYUP),
+            ]
+        );
+    }
+
     #[test]
     #[cfg(target_os = "windows")]
     fn only_complete_editable_identified_captures_get_one_use_tokens() {

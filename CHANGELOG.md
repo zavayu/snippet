@@ -1,24 +1,51 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 ### Added
 
 - Research quick action with free You.com web search and Ollama summaries.
 - Automatic search planning for normal prompts and follow-ups; explicit Research
   bypasses the decision, and disabling web search skips planning entirely.
-- Search query and source display, clickable citations, and source URLs in copied
-  responses; follow-ups retain the original research evidence.
+- Search query display, collapsed source lists, clickable individual and grouped
+  citations, and source URLs in copied responses; follow-ups retain research
+  evidence and preserve earlier citation numbers when retrieving new sources.
 - Web search settings enabled by default, with an optional API key stored in
   Windows Credential Manager and explicit handling of provider errors and limits.
+- Opt-in request timing traces covering search planning, retrieval, first answer
+  content, and Ollama loading, token processing, and generation metrics.
+- Benchmark tools for direct answers, automatic search decisions, and explicit
+  Research, plus search-routing and freshness evaluation tools.
+- Development-only request inspector for the final model request payloads, with
+  opt-in capture of the last ten requests in memory and image data omitted.
 
+### Improved
+
+- Supply current UTC and device-local timestamps and the active search setting
+  to the model, refreshed each turn and after search planning and retrieval.
+- Guide answers to distinguish publication and retrieval dates from event,
+  observation, and forecast times, and state when current conditions cannot be
+  verified from the retrieved evidence.
+- Route searches from the current instruction and conversation context while
+  answering stable explanations, writing tasks, and capability questions directly.
+- Expand the initial prompt input for multiline text and share keyboard behavior
+  with follow-ups: Enter submits, while Shift+Enter inserts a newline.
+- Keep search progress in the initial response header and resize the popup when
+  source lists expand or collapse.
+- Extract model instructions into Markdown templates embedded at build time,
+  with validated, single-pass placeholder substitution.
 
 ### Fixed
 
+- Paste multiline replacements as plain text with Windows line endings instead
+  of typing carriage-return events, preserving paragraph breaks across editors.
+  Multiline replacements leave the response on the clipboard.
 - Fall back to Copy for Google Docs editor proxies instead of treating their empty
   accessibility selections as proof that no text is selected.
 - Allow a bounded longer copy wait for Docs and wait for readable clipboard text
   when a web editor publishes clipboard formats in stages.
+- Reject clipboard text that changes during capture and avoid treating a writable
+  Google Docs input proxy as proof that the document supports replacement.
 
 ## 0.5.0
 

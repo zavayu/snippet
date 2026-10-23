@@ -934,18 +934,12 @@ function App() {
                 <textarea
                   ref={initialInputRef}
                   aria-label="Ask about the selection"
-                  title="Enter to send; Shift+Space or Shift+Enter for a new line"
+                  title="Enter to send; Shift+Enter for a new line"
                   className="initial-prompt block max-h-32 w-full resize-none overflow-x-hidden overflow-y-auto bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
                   placeholder={selection || image ? "Ask about this…" : "Ask me anything"}
                   rows={1}
                   value={customInstruction}
-                  onKeyDown={(event) => handlePromptKeyDown(event, (value) => {
-                    setCustomInstruction(value);
-                    lastIntentRef.current = null;
-                    setPromptPreview(null);
-                    setPromptPreviewError(null);
-                    setIsPromptPreviewExpanded(false);
-                  }, () => void startGeneration())}
+                  onKeyDown={(event) => handlePromptKeyDown(event, () => void startGeneration())}
                   onChange={(event) => {
                     setCustomInstruction(event.target.value);
                     lastIntentRef.current = null;
