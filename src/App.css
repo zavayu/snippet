@@ -266,3 +266,21 @@ body {
   border: 0;
   border-top: 1px solid rgb(63 63 70);
 }
+
+.markdown-response .katex {
+  font-size: 1.1em;
+  overflow-wrap: normal;
+}
+
+.markdown-response .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}
+
+.markdown-response .katex-error {
+  color: rgb(252 211 77);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

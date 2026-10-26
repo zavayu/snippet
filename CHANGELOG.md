@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Offline LaTeX math rendering in responses with inline `$...$` and display `$$`
+  equations, horizontal scrolling for wide equations, and preserved LaTeX source
+  when copying or replacing text.
+
 ## 0.6.0
 
 ### Added
