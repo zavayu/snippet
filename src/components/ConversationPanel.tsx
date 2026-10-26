@@ -1,7 +1,7 @@
 import { responseWithSources } from "../research";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { isTurnActive, type ConversationState } from "../conversation";
+import { generationLabel, isTurnActive, type ConversationState } from "../conversation";
 import { WebLink } from "./WebLink";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { handlePromptKeyDown } from "../promptKeyboard";
@@ -126,7 +126,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
               </li>)}
             </ol>
           </details>}
-        {conversation.expanded && turn.status === "loading" && !turn.research && <p className="text-xs text-zinc-500">Thinking…</p>}
+        {conversation.expanded && turn.status === "loading" && <p className="text-xs text-zinc-500">{generationLabel(turn)}</p>}
         {turn.status === "stopped" && <p className="mt-2 text-xs text-zinc-500">Response stopped. This turn is not included in follow-up context.</p>}
         {turn.status === "error" && <p role="alert" className="mt-2 text-xs text-amber-200">{turn.error}{turn.response && " This incomplete turn is not included in follow-up context."}</p>}
         {conversation.expanded && turn.response && !isTurnActive(turn) && <div className="flex items-center gap-1">

@@ -14,6 +14,7 @@ export type ChatTurn = {
   requestId?: number;
   error?: string;
   research?: ResearchInfo;
+  loadingModel?: boolean;
 };
 export type ConversationState = {
   conversationId: number;
@@ -26,6 +27,7 @@ export type ConversationAction =
   | { type: "submit"; identity: TurnIdentity; prompt: string; reference?: string; kind: ChatTurn["kind"]; retry?: boolean }
   | { type: "started" | "complete" | "stopped"; event: GenerationEvent }
   | { type: "research"; event: GenerationEvent; research: ResearchInfo }
+  | { type: "model-loading"; event: GenerationEvent; loadingModel: boolean }
   | { type: "chunk"; event: GenerationEvent; delta: string }
   | { type: "error"; identity: TurnIdentity; message: string };
 
@@ -48,8 +50,11 @@ export function conversationReducer(state: ConversationState, action: Conversati
   const identity = action.type === "error" ? action.identity : action.event.context;
   if (!identity || identity.conversationId !== state.conversationId || identity.turnId !== last?.id || !isTurnActive(last)) return state;
   let updated = last;
-  if (action.type === "error") updated = { ...last, status: "error", error: action.message };
-  else if (action.type === "research") {
+  if (action.type === "error") updated = { ...last, status: "error", error: action.message, loadingModel: false };
+  else if (action.type === "model-loading") {
+    if (last.status !== "loading" || (last.requestId !== undefined && last.requestId !== action.event.requestId)) return state;
+    updated = { ...last, requestId: action.event.requestId, loadingModel: action.loadingModel };
+  } else if (action.type === "research") {
     if (last.requestId !== undefined && last.requestId !== action.event.requestId) return state;
     updated = { ...last, requestId: action.event.requestId,
       research: action.research.phase === "answering" && !action.research.sources.length ? undefined : action.research };
@@ -59,12 +64,23 @@ export function conversationReducer(state: ConversationState, action: Conversati
   } else {
     if (last.requestId !== action.event.requestId) return state;
     updated = action.type === "chunk"
-      ? { ...last, status: "streaming", response: last.response + action.delta }
-      : { ...last, status: action.type };
+      ? { ...last, status: "streaming", response: last.response + action.delta, loadingModel: false }
+      : { ...last, status: action.type, loadingModel: false };
   }
   return { ...state, turns: [...state.turns.slice(0, -1), updated] };
 }
 
 export function isTurnActive(turn?: ChatTurn): boolean {
   return turn?.status === "loading" || turn?.status === "streaming";
+}
+
+export function generationLabel(turn?: ChatTurn): string {
+  if (turn?.status === "streaming") return "Responding...";
+  if (turn?.loadingModel) return "Loading model...";
+  switch (turn?.research?.phase) {
+    case "planning": return "Preparing search...";
+    case "searching": return "Searching...";
+    case "summarizing": return "Summarizing...";
+    default: return "Thinking...";
+  }
 }

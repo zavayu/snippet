@@ -4,9 +4,17 @@
 
 ### Added
 
+- Show “Loading model…” only when Ollama reports the selected model is absent
+  from memory, before search planning or answering. Already loaded models proceed
+  without a load request; unavailable status checks fall back to normal generation.
 - Offline LaTeX math rendering in responses with inline `$...$` and display `$$`
   equations, horizontal scrolling for wide equations, and preserved LaTeX source
   when copying or replacing text.
+
+### Fixed
+
+- Keep the pending reply status visible through search planning in conversation
+  mode, preventing “Thinking…” from disappearing and reappearing before the answer.
 
 ## 0.6.0
 

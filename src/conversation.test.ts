@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conversationReducer as reduce, type ConversationState, type TurnIdentity } from "./conversation";
+import { conversationReducer as reduce, generationLabel, type ConversationState, type TurnIdentity } from "./conversation";
 
 const identity: TurnIdentity = { conversationId: 1, turnId: 1 };
 const event = { requestId: 10, context: identity };
@@ -12,6 +12,37 @@ function streaming() {
 }
 
 describe("conversation lifecycle", () => {
+  it("shows model loading only during preparation and restores research or answer statuses", () => {
+    let state = reduce(empty, { type: "submit", identity, prompt: "Explain", kind: "initial" });
+    expect(generationLabel(state.turns[0])).toBe("Thinking...");
+    state = reduce(state, { type: "model-loading", event, loadingModel: true });
+    expect(generationLabel(state.turns[0])).toBe("Loading model...");
+    expect(reduce(state, { type: "model-loading", event: { ...event, requestId: 99 }, loadingModel: false })).toBe(state);
+    state = reduce(state, { type: "started", event });
+    expect(state.turns[0].loadingModel).toBe(true);
+    state = reduce(state, { type: "model-loading", event, loadingModel: false });
+    expect(generationLabel(state.turns[0])).toBe("Thinking...");
+    state = reduce(state, { type: "research", event, research: { phase: "planning", query: null, sources: [] } });
+    expect(generationLabel(state.turns[0])).toBe("Preparing search...");
+    state = reduce(state, { type: "chunk", event, delta: "Answer" });
+    expect(generationLabel(state.turns[0])).toBe("Responding...");
+    expect(reduce(state, { type: "model-loading", event, loadingModel: true })).toBe(state);
+  });
+
+  it("clears model loading on stop or error and rejects late loading events", () => {
+    const submitted = reduce(empty, { type: "submit", identity, prompt: "Explain", kind: "initial" });
+    const loading = reduce(submitted, { type: "model-loading", event, loadingModel: true });
+    for (const done of [
+      reduce(loading, { type: "stopped", event }),
+      reduce(loading, { type: "error", identity, message: "Load failed" }),
+    ]) {
+      expect(done.turns[0].loadingModel).toBe(false);
+      expect(reduce(done, { type: "model-loading", event, loadingModel: true })).toBe(done);
+    }
+    const reset = reduce(loading, { type: "reset", conversationId: 2 });
+    expect(reduce(reset, { type: "model-loading", event, loadingModel: true })).toBe(reset);
+  });
+
   it("expands without submitting and retains earlier answers during follow-up streaming", () => {
     let state = reduce(streaming(), { type: "complete", event });
     state = reduce(state, { type: "expand" });

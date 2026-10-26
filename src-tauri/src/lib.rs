@@ -461,6 +461,14 @@ struct ResearchStatus {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ModelLoadingStatus {
+    request_id: u64,
+    context: TurnIdentity,
+    loading_model: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GenerationFinished {
     request_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -898,6 +906,18 @@ fn stream_conversation(
         let research_conversation = conversation.clone();
         let provider_trace = trace.clone();
         let provider_task = tauri::async_runtime::spawn(async move {
+            provider
+                .prepare_model(&request.model, &cancellation, |loading_model| {
+                    let _ = research_app.emit(
+                        "model-loading-status",
+                        ModelLoadingStatus {
+                            request_id,
+                            context: identity,
+                            loading_model,
+                        },
+                    );
+                })
+                .await?;
             if let Some(mode) = research {
                 let progress =
                     |phase: &str, query: Option<String>, sources: Vec<research::Source>| {

@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ConversationState } from "../conversation";
+import { conversationReducer, type ConversationState } from "../conversation";
 import { ConversationPanel } from "./ConversationPanel";
 
 function render(conversation: ConversationState, replacementId: number | null = null) {
@@ -18,6 +18,54 @@ const completed: ConversationState = {
 };
 
 describe("conversation interface", () => {
+  it("keeps pending follow-up status visible through search decisions and replaces it with the answer", () => {
+    const identity = { conversationId: 1, turnId: 2 };
+    const event = { requestId: 10, context: identity };
+    let state = conversationReducer({ ...completed, expanded: true }, {
+      type: "submit", identity, prompt: "Why?", kind: "follow-up",
+    });
+    state = conversationReducer(state, { type: "started", event });
+    expect(render(state)).toContain("Thinking...");
+    state = conversationReducer(state, {
+      type: "research", event, research: { phase: "deciding", query: null, sources: [] },
+    });
+    expect(render(state)).toContain("Thinking...");
+    state = conversationReducer(state, {
+      type: "research", event, research: { phase: "answering", query: null, sources: [] },
+    });
+    expect(render(state)).toContain("Thinking...");
+    state = conversationReducer(state, { type: "chunk", event, delta: "Because it works." });
+    expect(render(state)).toContain("Because it works.");
+    expect(render(state)).not.toContain("Thinking...");
+  });
+
+  it.each([
+    ["planning", "Preparing search..."],
+    ["searching", "Searching..."],
+    ["summarizing", "Summarizing..."],
+    ["answering", "Thinking..."],
+  ] as const)("shows pending status during %s with retained sources", (phase, label) => {
+    const html = render({ ...completed, expanded: true, turns: [...completed.turns, {
+      id: 2, prompt: "Why?", response: "", kind: "follow-up", status: "loading",
+      research: { phase, query: "test", sources: [{ id: 1, title: "Source", url: "https://example.com/", excerpt: "", publishedAt: null }] },
+    }] });
+    expect(html).toContain(label);
+    expect(html).not.toContain("<details");
+  });
+
+  it("shows loading in expanded follow-ups with retained research and keeps Stop available", () => {
+    const turn = {
+      id: 2, prompt: "Why?", response: "", kind: "follow-up" as const, status: "loading" as const,
+      research: { phase: "answering" as const, query: null, sources: [] },
+    };
+    const conversation = { ...completed, expanded: true, turns: [...completed.turns, turn] };
+    expect(render(conversation)).not.toContain("Loading model...");
+    const html = render({ ...conversation, turns: [...completed.turns, { ...turn, loadingModel: true }] });
+    expect(html).toContain("Loading model...");
+    expect(html).toContain('aria-label="Stop response"');
+    expect(html).not.toContain("Thinking...");
+  });
+
   it("offers replacement only with an authorized selection and a completed response", () => {
     expect(render(completed)).not.toContain('aria-label="Replace selection"');
     expect(render(completed, 42)).toContain('aria-label="Replace selection"');

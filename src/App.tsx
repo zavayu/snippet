@@ -17,7 +17,7 @@ import { SHOW_DEVELOPMENT_TOOLS } from "./config";
 import { RequestInspector } from "./components/RequestInspector";
 import { UpdatesPanel } from "./components/UpdatesPanel";
 import { updateController, useUpdates } from "./useUpdates";
-import { conversationReducer, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
+import { conversationReducer, generationLabel, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
 import { ConversationPanel } from "./components/ConversationPanel";
 import { handlePromptKeyDown } from "./promptKeyboard";
 import { popupPosition, type SelectionBounds } from "./popupPosition";
@@ -471,6 +471,9 @@ function App() {
       }),
       listen<GenerationEvent & ResearchInfo>("research-status", (event) => {
         dispatchConversation({ type: "research", event: event.payload, research: event.payload });
+      }),
+      listen<GenerationEvent & { loadingModel: boolean }>("model-loading-status", (event) => {
+        dispatchConversation({ type: "model-loading", event: event.payload, loadingModel: event.payload.loadingModel });
       }),
       listen<GenerationChunk>("generation-chunk", (event) => {
         dispatchConversation({ type: "chunk", event: event.payload, delta: event.payload.delta });
@@ -961,7 +964,7 @@ function App() {
                   <path d="M20 12a8 8 0 0 0-8-8" className="stroke-zinc-400" strokeLinecap="round" strokeWidth="2.5" />
                 </svg>
                 <span data-tauri-drag-region className="truncate px-1 py-2 text-[17px] italic text-zinc-400">
-                  {generationState === "loading" ? currentTurn?.research?.phase === "planning" ? "Preparing search..." : currentTurn?.research?.phase === "searching" ? "Searching..." : currentTurn?.research?.phase === "summarizing" ? "Summarizing..." : "Thinking..." : "Responding..."}
+                  {generationLabel(currentTurn)}
                 </span>
               </div>
             )}

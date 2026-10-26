@@ -18,6 +18,14 @@ use super::{
 use crate::prompt::ChatMessage;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn model_name(name: &str) -> String {
+    if name.rsplit('/').next().unwrap_or(name).contains(':') {
+        name.to_owned()
+    } else {
+        format!("{name}:latest")
+    }
+}
 // Keep planning and answering on the same loaded Ollama runner. Changing num_ctx
 // between requests can force a reload even when the model is unchanged.
 pub const CHAT_CONTEXT_TOKENS: u32 = 16_384;
@@ -84,6 +92,86 @@ impl OllamaProvider {
 
     fn endpoint(&self, path: &str) -> String {
         format!("{}/api/{path}", self.base_url)
+    }
+
+    /// Check once per turn, before routing or answering. Status lookup is best
+    /// effort; older servers must still be able to answer normally.
+    pub async fn prepare_model(
+        &self,
+        model: &str,
+        cancellation: &CancellationToken,
+        loading: impl Fn(bool) + Send,
+    ) -> Result<(), ProviderError> {
+        if cancellation.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        let check = async {
+            let response = self
+                .client
+                .get(self.endpoint("ps"))
+                .timeout(Duration::from_secs(1))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response.json::<OllamaTagsResponse>().await.ok()
+        };
+        let running = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+            result = check => result,
+        };
+        let Some(running) = running else {
+            return Ok(());
+        };
+        if running
+            .models
+            .iter()
+            .any(|entry| model_name(&entry.name) == model_name(model))
+        {
+            return Ok(());
+        }
+
+        loading(true);
+        let load = async {
+            // Use the answer context size so planning does not immediately
+            // replace the runner we just loaded.
+            let body = serde_json::json!({
+                "model": model, "messages": [], "stream": false,
+                "options": {"num_ctx": CHAT_CONTEXT_TOKENS}
+            });
+            let response = self
+                .client
+                .post(self.endpoint("chat"))
+                .timeout(Duration::from_secs(300))
+                .json(&body)
+                .send()
+                .await
+                .map_err(map_connection_error)?;
+            let value: serde_json::Value = ensure_success(response)
+                .await?
+                .json()
+                .await
+                .map_err(|error| ProviderError::InvalidResponse(error.to_string()))?;
+            if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+                return Err(ProviderError::RequestFailed(error.into()));
+            }
+            if value.get("done").and_then(serde_json::Value::as_bool) != Some(true) {
+                return Err(ProviderError::InvalidResponse(
+                    "Incomplete model load response".into(),
+                ));
+            }
+            Ok(())
+        };
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(ProviderError::Cancelled),
+            result = load => result,
+        };
+        loading(false);
+        result
     }
 
     pub async fn search_decision(
@@ -715,6 +803,180 @@ mod tests {
         OllamaGenerateChunk, OllamaGenerateRequest,
     };
     use crate::prompt::{ChatMessage, ChatRole};
+
+    // Serve one response per connection and inspect the complete request, so
+    // warm-model tests also prove that no extra load request is sent.
+    fn preparation_server(
+        replies: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for (path, status, body) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(path), "{line}");
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut payload = vec![0; length];
+                reader.read_exact(&mut payload).unwrap();
+                if path.starts_with("POST") {
+                    let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                    assert_eq!(value["model"], "test");
+                    assert_eq!(value["messages"], serde_json::json!([]));
+                    assert_eq!(value["stream"], false);
+                    assert_eq!(value["options"]["num_ctx"], super::CHAT_CONTEXT_TOKENS);
+                }
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (base, server)
+    }
+
+    #[tokio::test]
+    async fn prepares_only_models_confirmed_absent_and_falls_back_on_failed_checks() {
+        for (status, body, cold) in [
+            ("200 OK", r#"{"models":[{"name":"test:latest"}]}"#, false),
+            ("200 OK", r#"{"models":[{"name":"test"}]}"#, false),
+            ("200 OK", r#"{"models":[]}"#, true),
+            ("200 OK", r#"{"models":[{"name":"other:latest"}]}"#, true),
+            ("404 Not Found", "{}", false),
+            ("200 OK", "invalid json", false),
+        ] {
+            let mut replies = vec![("GET /api/ps ", status, body)];
+            if cold {
+                replies.push((
+                    "POST /api/chat ",
+                    "200 OK",
+                    r#"{"done":true,"done_reason":"load"}"#,
+                ));
+            }
+            let (base, server) = preparation_server(replies);
+            let provider = super::OllamaProvider::new(base).unwrap();
+            let phases = std::sync::Mutex::new(Vec::new());
+            provider
+                .prepare_model(
+                    "test",
+                    &tokio_util::sync::CancellationToken::new(),
+                    |loading| {
+                        phases.lock().unwrap().push(loading);
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                *phases.lock().unwrap(),
+                if cold { vec![true, false] } else { vec![] }
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn model_load_errors_clear_the_status_and_propagate() {
+        for (status, body) in [
+            ("500 Internal Server Error", r#"{"error":"out of memory"}"#),
+            ("200 OK", r#"{"error":"load failed"}"#),
+            ("200 OK", r#"{"done":false}"#),
+        ] {
+            let (base, server) = preparation_server(vec![
+                ("GET /api/ps ", "200 OK", r#"{"models":[]}"#),
+                ("POST /api/chat ", status, body),
+            ]);
+            let provider = super::OllamaProvider::new(base).unwrap();
+            let phases = std::sync::Mutex::new(Vec::new());
+            assert!(provider
+                .prepare_model(
+                    "test",
+                    &tokio_util::sync::CancellationToken::new(),
+                    |loading| {
+                        phases.lock().unwrap().push(loading);
+                    }
+                )
+                .await
+                .is_err());
+            assert_eq!(*phases.lock().unwrap(), vec![true, false]);
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn preparation_can_be_cancelled_during_status_check_or_loading() {
+        use std::io::{Read, Write};
+        for during_load in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let (connected, connection) = tokio::sync::oneshot::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                if during_load {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut buffer = [0; 4096];
+                    stream.read(&mut buffer).unwrap();
+                    let body = r#"{"models":[]}"#;
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+                let (_stream, _) = listener.accept().unwrap();
+                connected.send(()).unwrap();
+                released
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            });
+            let provider = super::OllamaProvider::new(base).unwrap();
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            let token = cancellation.clone();
+            let (sender, mut phases) = tokio::sync::mpsc::unbounded_channel();
+            let task = tokio::spawn(async move {
+                provider
+                    .prepare_model("test", &token, |loading| {
+                        sender.send(loading).unwrap();
+                    })
+                    .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(3), connection)
+                .await
+                .unwrap()
+                .unwrap();
+            cancellation.cancel();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                result,
+                Err(crate::provider::ProviderError::Cancelled)
+            ));
+            let mut received = Vec::new();
+            while let Some(value) = phases.recv().await {
+                received.push(value);
+            }
+            assert_eq!(
+                received,
+                if during_load {
+                    vec![true, false]
+                } else {
+                    vec![]
+                }
+            );
+            release.send(()).unwrap();
+            server.join().unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn traces_first_answer_content_once_and_preserves_engine_metrics() {
