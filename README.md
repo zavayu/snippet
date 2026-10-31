@@ -104,19 +104,26 @@ vision support to use this workflow.
 ## Web research
 
 Type a question such as "Research restaurants in Santa Clara" and send it.
-Your Ollama model checks whether the task needs external information and creates
-its query in one planning step. Ordinary explanations, writing tasks, and questions
-about Snippet's capabilities are answered directly; current facts and requests to
-look something up can trigger search. With selected text, choose **Research** to always search,
-skipping that decision. Explain, Summarize, and Refine remain local actions.
+A tool-capable Ollama model can request web searches when it needs current facts
+or external evidence, then use the results to answer. Ordinary explanations and
+writing tasks can answer directly. With selected text, choose **Research** to
+require a search. Explain, Summarize, and Refine remain local actions.
+
+Snippet checks the installed model's tool capabilities. Models without confirmed
+tool support can still chat, with an on-screen notice that new searches are
+unavailable. Research requires a tool-capable model. You can inspect support with
+`ollama show YOUR_MODEL` and look for `tools` under Capabilities.
 
 Snippet searches You.com and streams an answer with numbered citations. Sources
 appear collapsed after the response finishes; expand them to see the query and
-links. Copying a research response includes its source URLs. Follow-ups can reuse
-earlier evidence or search again when needed, preserving existing source IDs.
+links. Copying a research response includes its source URLs. Follow-ups retain
+successful tool exchanges and can reuse evidence or search again, preserving
+existing source IDs. Each turn allows up to three searches, rejects repeated
+queries, and has a five-minute deadline. Stop cancels the request; failed or
+stopped turns do not enter conversation history.
 
 Web search is **enabled by default**. Disable it in **Settings > Web search** and
-save your settings to hide Research, skip search planning, and block new searches.
+save your settings to hide Research, omit the search tool, and block new searches.
 Research uses text; read a screenshot with OCR first or type a question.
 
 Free search needs no account or API key and is subject to You.com's service

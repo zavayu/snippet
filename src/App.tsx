@@ -475,6 +475,9 @@ function App() {
       listen<GenerationEvent & { loadingModel: boolean }>("model-loading-status", (event) => {
         dispatchConversation({ type: "model-loading", event: event.payload, loadingModel: event.payload.loadingModel });
       }),
+      listen<GenerationFinished>("generation-content-reset", (event) => {
+        dispatchConversation({ type: "content-reset", event: event.payload });
+      }),
       listen<GenerationChunk>("generation-chunk", (event) => {
         dispatchConversation({ type: "chunk", event: event.payload, delta: event.payload.delta });
       }),

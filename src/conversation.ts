@@ -25,7 +25,7 @@ export type ConversationAction =
   | { type: "reset"; conversationId: number }
   | { type: "expand" }
   | { type: "submit"; identity: TurnIdentity; prompt: string; reference?: string; kind: ChatTurn["kind"]; retry?: boolean }
-  | { type: "started" | "complete" | "stopped"; event: GenerationEvent }
+  | { type: "started" | "complete" | "stopped" | "content-reset"; event: GenerationEvent }
   | { type: "research"; event: GenerationEvent; research: ResearchInfo }
   | { type: "model-loading"; event: GenerationEvent; loadingModel: boolean }
   | { type: "chunk"; event: GenerationEvent; delta: string }
@@ -63,7 +63,8 @@ export function conversationReducer(state: ConversationState, action: Conversati
     updated = { ...last, requestId: action.event.requestId };
   } else {
     if (last.requestId !== action.event.requestId) return state;
-    updated = action.type === "chunk"
+    if (action.type === "content-reset") updated = { ...last, response: "", status: "loading" };
+    else updated = action.type === "chunk"
       ? { ...last, status: "streaming", response: last.response + action.delta, loadingModel: false }
       : { ...last, status: action.type, loadingModel: false };
   }

@@ -27,6 +27,7 @@ pub struct OcrGenerationOptions {
 #[derive(Debug, Clone)]
 pub enum GenerationEvent {
     Delta(String),
+    Reset,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -39,12 +40,36 @@ pub struct ModelInfo {
 pub trait LlmProvider: Send + Sync {
     async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
 
+    async fn supports_tools(
+        &self,
+        model: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<bool>, ProviderError>;
+
+    async fn stream_chat(
+        &self,
+        request: GenerationRequest,
+        cancellation: CancellationToken,
+        events: UnboundedSender<GenerationEvent>,
+        tools: Vec<serde_json::Value>,
+    ) -> Result<ChatMessage, ProviderError>;
+
     async fn stream_generation(
         &self,
         request: GenerationRequest,
         cancellation: CancellationToken,
         events: UnboundedSender<GenerationEvent>,
-    ) -> Result<(), ProviderError>;
+    ) -> Result<(), ProviderError> {
+        let answer = self
+            .stream_chat(request, cancellation, events, Vec::new())
+            .await?;
+        if !answer.tool_calls.is_empty() {
+            return Err(ProviderError::RequestFailed(
+                "The model requested an unavailable tool.".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

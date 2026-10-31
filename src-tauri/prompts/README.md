@@ -10,12 +10,10 @@ disk. This refactor preserves the existing instruction wording.
 | `assistant.md` | First answer system message |
 | `runtime-context.md`, `clock.md`, `capabilities/*.md` | Runtime system message, refreshed for each answer |
 | `actions/*.md` | Quick-action or explicit Research task in the user message |
-| `search-routing.md` | Automatic search planner's system message |
-| `search-query.md` | Explicit Research query planner's system message |
-| `web-evidence.md` | Answer system message when grounding with search results |
-| `freshness.md` | Current user message when grounding with search results |
+| `tool-loop.md` | Per-turn tool selection and evidence-reuse instructions |
+| `web-evidence.md` | Runtime system message and tool-result evidence rules |
+| `freshness.md` | Evidence message when grounding with search results |
 | `retrieval-note.md` | Retrieval metadata inside evidence JSON |
-| `no-search.md` | Current user message when automatic planning skips search |
 | `ocr.md` | Ollama OCR generate prompt (native Windows OCR has no model prompt) |
 
 Templates use literal `{{name}}` placeholders. Bindings are supplied by Rust:

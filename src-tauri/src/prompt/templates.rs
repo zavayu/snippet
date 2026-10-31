@@ -28,13 +28,13 @@ pub const SEARCH_DISABLED: Template = Template {
     name: "capabilities/search-disabled",
     source: include_str!("../../prompts/capabilities/search-disabled.md"),
 };
-pub const SEARCH_ROUTING: Template = Template {
-    name: "search-routing",
-    source: include_str!("../../prompts/search-routing.md"),
+pub const TOOL_LOOP: Template = Template {
+    name: "tool-loop",
+    source: include_str!("../../prompts/tool-loop.md"),
 };
-pub const SEARCH_QUERY: Template = Template {
-    name: "search-query",
-    source: include_str!("../../prompts/search-query.md"),
+pub const SEARCH_UNAVAILABLE: Template = Template {
+    name: "capabilities/search-unavailable",
+    source: include_str!("../../prompts/capabilities/search-unavailable.md"),
 };
 pub const WEB_EVIDENCE: Template = Template {
     name: "web-evidence",
@@ -47,10 +47,6 @@ pub const FRESHNESS: Template = Template {
 pub const RETRIEVAL_NOTE: Template = Template {
     name: "retrieval-note",
     source: include_str!("../../prompts/retrieval-note.md"),
-};
-pub const NO_SEARCH: Template = Template {
-    name: "no-search",
-    source: include_str!("../../prompts/no-search.md"),
 };
 pub const OCR: Template = Template {
     name: "ocr",
@@ -83,12 +79,11 @@ pub const ALL: &[Template] = &[
     CLOCK,
     SEARCH_ENABLED,
     SEARCH_DISABLED,
-    SEARCH_ROUTING,
-    SEARCH_QUERY,
+    TOOL_LOOP,
+    SEARCH_UNAVAILABLE,
     WEB_EVIDENCE,
     FRESHNESS,
     RETRIEVAL_NOTE,
-    NO_SEARCH,
     OCR,
     EXPLAIN_TEXT,
     EXPLAIN_IMAGE,

@@ -1,8 +1,9 @@
+pub mod agent;
 mod conversation;
 mod ocr;
 pub mod prompt;
 pub mod provider;
-mod research;
+pub mod research;
 mod screen;
 mod search_credentials;
 mod selection;
@@ -733,25 +734,15 @@ fn generate_for_selection(
         if topic.trim().is_empty() && instruction.trim().is_empty() {
             return Err("Select text or enter a research question.".into());
         }
-        Some(research::ResearchPlan {
-            topic,
-            instruction,
-            api_key: search_credentials::read()?,
-        })
+        Some(research::SearchMode::Explicit)
     } else {
         None
     };
-    let automatic_search =
-        if let crate::prompt::PromptIntent::Custom { instruction } = &request.intent {
-            research::SearchMode::automatic(
-                snapshot.config.web_search_enabled,
-                instruction,
-                request.selected_text.as_deref().unwrap_or_default(),
-                Vec::new(),
-            )
-        } else {
-            None
-        };
+    let automatic_search = if let crate::prompt::PromptIntent::Custom { .. } = &request.intent {
+        research::SearchMode::automatic(snapshot.config.web_search_enabled, Vec::new())
+    } else {
+        None
+    };
     let image = request
         .image_id
         .map(|image_id| {
@@ -761,17 +752,9 @@ fn generate_for_selection(
         })
         .transpose()?;
     let mut messages = PromptBuilder::build(PromptRequest {
-        selected_text: research
-            .as_ref()
-            .map(|plan| plan.topic.clone())
-            .or(request.selected_text),
+        selected_text: request.selected_text,
         has_image: image.is_some(),
-        intent: research
-            .as_ref()
-            .map(|plan| crate::prompt::PromptIntent::Research {
-                instruction: plan.instruction.clone(),
-            })
-            .unwrap_or(request.intent),
+        intent: request.intent,
         context: None,
     })
     .map_err(|error| error.user_message())?;
@@ -805,9 +788,7 @@ fn generate_for_selection(
             thinking: snapshot.config.thinking,
         },
         request.identity,
-        research
-            .map(research::SearchMode::Explicit)
-            .or(automatic_search),
+        research.or(automatic_search),
         snapshot.config.web_search_enabled,
     ))
 }
@@ -838,12 +819,7 @@ fn continue_conversation(
         .0
         .lock()
         .map_err(|_| "Conversation is unavailable.")?;
-    let search = research::SearchMode::automatic(
-        snapshot.config.web_search_enabled,
-        &request.instruction,
-        "",
-        session.sources(),
-    );
+    let search = research::SearchMode::automatic(true, session.sources());
     let messages = session.begin(request.identity, None, Some(request.instruction))?;
     Ok(stream_conversation(
         app,
@@ -906,96 +882,73 @@ fn stream_conversation(
         let research_conversation = conversation.clone();
         let provider_trace = trace.clone();
         let provider_task = tauri::async_runtime::spawn(async move {
-            provider
-                .prepare_model(&request.model, &cancellation, |loading_model| {
-                    let _ = research_app.emit(
-                        "model-loading-status",
-                        ModelLoadingStatus {
-                            request_id,
-                            context: identity,
-                            loading_model,
-                        },
-                    );
-                })
-                .await?;
-            if let Some(mode) = research {
-                let progress =
-                    |phase: &str, query: Option<String>, sources: Vec<research::Source>| {
+            let progress = |phase: &str, query: Option<String>, sources: Vec<research::Source>| {
+                let _ = research_app.emit(
+                    "research-status",
+                    ResearchStatus {
+                        request_id,
+                        context: identity,
+                        phase: phase.into(),
+                        query,
+                        sources,
+                    },
+                );
+            };
+            let enabled = web_search_enabled && research.is_some();
+            let explicit = matches!(research, Some(research::SearchMode::Explicit));
+            let previous_sources = research
+                .as_ref()
+                .map(|mode| mode.previous_sources().to_vec())
+                .unwrap_or_default();
+            let search_token = cancellation.clone();
+            let task = async {
+                provider
+                    .prepare_model(&request.model, &cancellation, |loading_model| {
                         let _ = research_app.emit(
-                            "research-status",
-                            ResearchStatus {
+                            "model-loading-status",
+                            ModelLoadingStatus {
                                 request_id,
                                 context: identity,
-                                phase: phase.into(),
-                                query,
-                                sources,
+                                loading_model,
                             },
                         );
-                    };
-                let previous_sources = mode.previous_sources().to_vec();
-                let automatic = matches!(&mode, research::SearchMode::Automatic { .. });
-                progress(
-                    if automatic { "deciding" } else { "planning" },
-                    None,
-                    previous_sources.clone(),
-                );
-                let query = research::plan_search(
+                    })
+                    .await?;
+                let (messages, sources) = agent::run(
                     &provider,
-                    &request.model,
-                    &mode,
-                    &request.messages,
-                    &cancellation,
+                    request,
+                    enabled,
+                    explicit,
+                    previous_sources,
+                    cancellation.clone(),
+                    event_sender,
+                    |query| {
+                        let token = search_token.clone();
+                        let trace = provider_trace.clone();
+                        async move {
+                            let key =
+                                search_credentials::read().map_err(ProviderError::RequestFailed)?;
+                            research::search_traced(&query, key.as_deref(), &token, &trace).await
+                        }
+                    },
+                    progress,
                 )
                 .await?;
-                if cancellation.is_cancelled() {
-                    return Err(ProviderError::Cancelled);
-                }
-                if let Some(query) = query {
-                    let api_key = match &mode {
-                        research::SearchMode::Explicit(plan) => plan.api_key.clone(),
-                        research::SearchMode::Automatic { .. } => {
-                            search_credentials::read().map_err(ProviderError::RequestFailed)?
-                        }
-                    };
-                    progress("searching", Some(query.clone()), previous_sources.clone());
-                    let fresh = research::search_traced(
-                        &query,
-                        api_key.as_deref(),
-                        &cancellation,
-                        &provider_trace,
-                    )
-                    .await?;
-                    let sources = research::merge_sources(&previous_sources, fresh);
-                    if cancellation.is_cancelled() {
-                        return Err(ProviderError::Cancelled);
-                    }
-                    let grounding = provider_trace.span("attach_evidence");
-                    research::ground(&mut request.messages, &sources[previous_sources.len()..]);
-                    research_conversation
-                        .0
-                        .lock()
-                        .map_err(|_| {
-                            ProviderError::RequestFailed("Conversation is unavailable.".into())
-                        })?
-                        .ground_pending(identity, request.messages.clone(), sources.clone())
-                        .map_err(ProviderError::RequestFailed)?;
-                    grounding.finish();
-                    progress("summarizing", Some(query), sources);
-                } else {
-                    provider_trace.mark("search_skipped", serde_json::json!({}));
-                    progress("answering", None, previous_sources);
-                    request.messages[0]
-                        .content
-                        .push_str(&crate::prompt::templates::text(
-                            crate::prompt::templates::NO_SEARCH,
-                        ));
-                }
+                research_conversation
+                    .0
+                    .lock()
+                    .map_err(|_| {
+                        ProviderError::RequestFailed("Conversation is unavailable.".into())
+                    })?
+                    .ground_pending(identity, messages, sources)
+                    .map_err(ProviderError::RequestFailed)
+            };
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => Err(ProviderError::Cancelled),
+                result = tokio::time::timeout(Duration::from_secs(300), task) =>
+                    result.unwrap_or_else(|_| Err(ProviderError::RequestFailed("The request timed out. Try a narrower question.".into()))),
             }
-            // Refresh after planning/retrieval so the clock is current when answering.
-            crate::prompt::set_web_search_context(&mut request.messages, web_search_enabled);
-            provider
-                .stream_generation(request, cancellation, event_sender)
-                .await
         });
 
         let mut response = String::new();
@@ -1006,6 +959,16 @@ fn stream_conversation(
             }
 
             match event {
+                GenerationEvent::Reset => {
+                    response.clear();
+                    let _ = app_handle.emit(
+                        "generation-content-reset",
+                        GenerationFinished {
+                            request_id,
+                            context,
+                        },
+                    );
+                }
                 GenerationEvent::Delta(delta) => {
                     response.push_str(&delta);
                     let dispatched = app_handle.emit(
@@ -1170,6 +1133,7 @@ fn read_screen(
 
             match event {
                 GenerationEvent::Delta(delta) => extracted_text.push_str(&delta),
+                GenerationEvent::Reset => extracted_text.clear(),
             }
         }
 

@@ -30,28 +30,11 @@ fn model_name(name: &str) -> String {
 // between requests can force a reload even when the model is unchanged.
 pub const CHAT_CONTEXT_TOKENS: u32 = 16_384;
 
-// Serialize the current instruction after reference/history, keeping the user's
-// task distinct from untrusted context and last in the router input.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchRoutingInput<'a> {
-    context: SearchRoutingContext<'a>,
-    current_instruction: &'a str,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchRoutingContext<'a> {
-    reference_text: &'a str,
-    previous_conversation: &'a [serde_json::Value],
-}
-
 #[derive(Clone)]
 pub struct OllamaProvider {
     base_url: String,
     client: Client,
     trace: crate::timing::Trace,
-    planning_context: u32,
 }
 
 impl OllamaProvider {
@@ -75,18 +58,11 @@ impl OllamaProvider {
             base_url,
             client,
             trace: crate::timing::Trace::default(),
-            planning_context: CHAT_CONTEXT_TOKENS,
         })
     }
 
     pub fn with_trace(mut self, trace: crate::timing::Trace) -> Self {
         self.trace = trace;
-        self
-    }
-
-    /// A benchmark override; normal planning shares the answer context size.
-    pub fn with_planning_context(mut self, num_ctx: u32) -> Self {
-        self.planning_context = num_ctx;
         self
     }
 
@@ -172,132 +148,6 @@ impl OllamaProvider {
         };
         loading(false);
         result
-    }
-
-    pub async fn search_decision(
-        &self,
-        model: &str,
-        topic: &str,
-        instruction: &str,
-        history: &[ChatMessage],
-        cancellation: &CancellationToken,
-    ) -> Result<String, ProviderError> {
-        // Preserve recent context within a fixed budget. Images and app system
-        // messages are not needed for routing and never enter the search query.
-        let mut remaining = 8000;
-        let mut context = Vec::new();
-        for message in history
-            .iter()
-            .rev()
-            .skip(1)
-            .filter(|message| message.role != crate::prompt::ChatRole::System)
-        {
-            if remaining == 0 {
-                break;
-            }
-            let content = crate::research::bounded(&message.content, remaining.min(2000));
-            remaining -= content.len();
-            context.push(serde_json::json!({"role":message.role,"content":content}));
-        }
-        context.reverse();
-        let span = self.trace.span("search_decision");
-        self.trace.mark(
-            "planner_request",
-            serde_json::json!({"num_ctx": self.planning_context}),
-        );
-        let task = async {
-            let request_body = serde_json::json!({
-                "model":model,"stream":false,"think":false,"format": {
-                    "type":"object","properties":{"search":{"type":"boolean"},"query":{"type":["string","null"]}},
-                    "required":["search","query"],"additionalProperties":false
-                },
-                "options":{"num_predict":160,"num_ctx":self.planning_context,"temperature":0},
-                "messages":[
-                    {"role":"system","content":crate::prompt::templates::text(crate::prompt::templates::SEARCH_ROUTING)},
-                    {"role":"user","content":serde_json::to_string(&SearchRoutingInput { context: SearchRoutingContext { reference_text: topic, previous_conversation: &context }, current_instruction: instruction }).expect("routing input serializes")}
-                ]
-            });
-            crate::prompt::inspector::record("search_decision", &request_body);
-            let response = self
-                .client
-                .post(self.endpoint("chat"))
-                .timeout(Duration::from_secs(120))
-                .json(&request_body)
-                .send()
-                .await
-                .map_err(map_connection_error)?;
-            let value: serde_json::Value =
-                ensure_success(response).await?.json().await.map_err(|_| {
-                    ProviderError::InvalidResponse("Unreadable search decision".into())
-                })?;
-            self.trace.ollama("search_decision", &value);
-            value
-                .pointer("/message/content")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| ProviderError::InvalidResponse("Missing search decision".into()))
-        };
-        if cancellation.is_cancelled() {
-            return Err(ProviderError::Cancelled);
-        }
-        tokio::select! {
-            _ = cancellation.cancelled() => Err(ProviderError::Cancelled),
-            result = task => {
-                if result.is_ok() { span.finish(); }
-                result
-            },
-        }
-    }
-
-    /// Query planning happens on the configured Ollama server before web access.
-    pub async fn research_query(
-        &self,
-        model: &str,
-        topic: &str,
-        instruction: &str,
-        cancellation: &CancellationToken,
-    ) -> Result<String, ProviderError> {
-        let span = self.trace.span("query_planning");
-        self.trace.mark(
-            "planner_request",
-            serde_json::json!({"num_ctx": self.planning_context}),
-        );
-        let task = async {
-            let request_body = serde_json::json!({
-                "model":model, "stream":false, "think":false, "format":"json",
-                "options":{"num_predict":128,"num_ctx":self.planning_context,"temperature":0},
-                "messages":[
-                    {"role":"system","content":crate::prompt::templates::text(crate::prompt::templates::SEARCH_QUERY)},
-                    {"role":"user","content":serde_json::json!({"topic":topic,"instruction":instruction}).to_string()}
-                ]
-            });
-            crate::prompt::inspector::record("query_planning", &request_body);
-            let response = self
-                .client
-                .post(self.endpoint("chat"))
-                .timeout(Duration::from_secs(120))
-                .json(&request_body)
-                .send()
-                .await
-                .map_err(map_connection_error)?;
-            let value: serde_json::Value =
-                ensure_success(response).await?.json().await.map_err(|_| {
-                    ProviderError::InvalidResponse("Unreadable query response".into())
-                })?;
-            self.trace.ollama("query_planning", &value);
-            value
-                .pointer("/message/content")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| ProviderError::InvalidResponse("Missing search query".into()))
-        };
-        tokio::select! {
-            _ = cancellation.cancelled() => Err(ProviderError::Cancelled),
-            result = task => {
-                if result.is_ok() { span.finish(); }
-                result
-            },
-        }
     }
 
     pub async fn stream_ocr(
@@ -408,12 +258,49 @@ impl LlmProvider for OllamaProvider {
             .collect())
     }
 
-    async fn stream_generation(
+    /// Inspect the exact installed model; missing metadata means unknown support.
+    async fn supports_tools(
+        &self,
+        model: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<bool>, ProviderError> {
+        let task = async {
+            let response = self
+                .client
+                .post(self.endpoint("show"))
+                .timeout(Duration::from_secs(10))
+                .json(&serde_json::json!({"model": model}))
+                .send()
+                .await
+                .map_err(map_connection_error)?;
+            let value: serde_json::Value = ensure_success(response)
+                .await?
+                .json()
+                .await
+                .map_err(|error| ProviderError::InvalidResponse(error.to_string()))?;
+            Ok(tool_support(&value))
+        };
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(ProviderError::Cancelled),
+            result = task => result,
+        }
+    }
+    async fn stream_chat(
         &self,
         request: GenerationRequest,
         cancellation: CancellationToken,
         events: UnboundedSender<GenerationEvent>,
-    ) -> Result<(), ProviderError> {
+        tools: Vec<serde_json::Value>,
+    ) -> Result<ChatMessage, ProviderError> {
+        let mut answer = ChatMessage {
+            role: crate::prompt::ChatRole::Assistant,
+            content: String::new(),
+            images: None,
+            tool_calls: Vec::new(),
+            tool_name: None,
+            thinking: None,
+        };
         let span = self.trace.span("answer_generation");
         self.trace.mark(
             "answer_request",
@@ -425,20 +312,29 @@ impl LlmProvider for OllamaProvider {
             model: request.model,
             messages: request.messages,
             stream: true,
+            tools,
             think: request.thinking,
             options: OllamaChatOptions {
                 num_ctx: CHAT_CONTEXT_TOKENS,
             },
         };
         crate::prompt::inspector::record("answer_generation", &request_body);
-        let response = self
-            .client
-            .post(self.endpoint("chat"))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(map_connection_error)?;
-        let response = ensure_success(response).await?;
+        let send = async {
+            let response = self
+                .client
+                .post(self.endpoint("chat"))
+                .timeout(Duration::from_secs(180))
+                .json(&request_body)
+                .send()
+                .await
+                .map_err(map_connection_error)?;
+            ensure_success(response).await
+        };
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+            result = send => result?,
+        };
         self.trace.mark("answer_headers", serde_json::json!({}));
 
         let byte_stream = response
@@ -461,6 +357,11 @@ impl LlmProvider for OllamaProvider {
             if line.trim().is_empty() {
                 continue;
             }
+            if line.len() > 128_000 {
+                return Err(ProviderError::InvalidResponse(
+                    "Ollama returned an oversized response chunk.".into(),
+                ));
+            }
 
             if first_chunk {
                 self.trace.mark("answer_first_chunk", serde_json::json!({}));
@@ -471,12 +372,35 @@ impl LlmProvider for OllamaProvider {
             if let Some(error) = chunk.error {
                 return Err(ProviderError::RequestFailed(error));
             }
+            if let Some(message) = &chunk.message {
+                if let Some(thinking) = &message.thinking {
+                    let accumulated = answer.thinking.get_or_insert_with(String::new);
+                    accumulated.push_str(thinking);
+                    if accumulated.len() > 64_000 {
+                        return Err(ProviderError::RequestFailed(
+                            "The model's reasoning exceeded the response limit.".into(),
+                        ));
+                    }
+                }
+                answer.tool_calls.extend(message.tool_calls.clone());
+                if answer.tool_calls.len() > 3 {
+                    return Err(ProviderError::RequestFailed(
+                        "The model requested too many tools in one step.".into(),
+                    ));
+                }
+            }
             if let Some(content) = chunk.message.and_then(|message| message.content) {
                 if !content.is_empty() {
                     if first_content {
                         self.trace
                             .mark("answer_first_content", serde_json::json!({}));
                         first_content = false;
+                    }
+                    answer.content.push_str(&content);
+                    if answer.content.len() > 64_000 {
+                        return Err(ProviderError::RequestFailed(
+                            "The model response is too large.".into(),
+                        ));
                     }
                     events
                         .send(GenerationEvent::Delta(content))
@@ -490,10 +414,17 @@ impl LlmProvider for OllamaProvider {
                     }
                 }
                 span.finish();
-                return Ok(());
+                return Ok(answer);
             }
         }
     }
+}
+
+fn tool_support(value: &serde_json::Value) -> Option<bool> {
+    value
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .map(|caps| caps.iter().any(|cap| cap.as_str() == Some("tools")))
 }
 
 fn map_connection_error(error: reqwest::Error) -> ProviderError {
@@ -536,6 +467,8 @@ struct OllamaChatRequest {
     stream: bool,
     think: bool,
     options: OllamaChatOptions,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -782,6 +715,10 @@ struct OllamaChatChunk {
 
 #[derive(Deserialize)]
 struct OllamaAssistantMessage {
+    #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<crate::prompt::ToolCall>,
     #[serde(default)]
     content: Option<String>,
 }
@@ -1077,11 +1014,15 @@ mod tests {
     #[test]
     fn serializes_the_thinking_preference() {
         let request = OllamaChatRequest {
+            tools: Vec::new(),
             model: "qwen3:8b".into(),
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: "Explain this".into(),
                 images: Some(vec!["image-data".into()]),
+                tool_calls: Vec::new(),
+                tool_name: None,
+                thinking: None,
             }],
             stream: true,
             think: false,
@@ -1092,6 +1033,59 @@ mod tests {
         assert_eq!(value["think"], false);
         assert_eq!(value["options"]["num_ctx"], 16_384);
         assert_eq!(value["messages"][0]["images"][0], "image-data");
+    }
+
+    #[test]
+    fn reads_native_tool_capability_metadata_without_guessing_from_names() {
+        assert_eq!(
+            super::tool_support(&serde_json::json!({"capabilities":["completion","tools"]})),
+            Some(true)
+        );
+        assert_eq!(
+            super::tool_support(&serde_json::json!({"capabilities":["completion","vision"]})),
+            Some(false)
+        );
+        assert_eq!(
+            super::tool_support(&serde_json::json!({"capabilities":[]})),
+            Some(false)
+        );
+        assert_eq!(super::tool_support(&serde_json::json!({})), None);
+        assert_eq!(
+            super::tool_support(&serde_json::json!({"capabilities":"tools"})),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_native_tool_calls_and_reasoning_but_rejects_malformed_calls() {
+        let chunk: OllamaChatChunk = serde_json::from_value(serde_json::json!({
+            "message":{"thinking":"Need current sources","content":"","tool_calls":[{"function":{"index":0,"name":"web_search","arguments":{"query":"Rust release"}}}]},"done":false
+        })).unwrap();
+        let message = chunk.message.unwrap();
+        assert_eq!(message.thinking.as_deref(), Some("Need current sources"));
+        assert_eq!(message.tool_calls[0].function.name, "web_search");
+        assert_eq!(
+            message.tool_calls[0].function.arguments["query"],
+            "Rust release"
+        );
+        let retained = ChatMessage {
+            role: ChatRole::Assistant,
+            content: String::new(),
+            images: None,
+            tool_calls: message.tool_calls,
+            tool_name: None,
+            thinking: message.thinking,
+        };
+        let serialized = serde_json::to_value(retained).unwrap();
+        assert_eq!(serialized["thinking"], "Need current sources");
+        assert_eq!(
+            serialized["tool_calls"][0]["function"]["arguments"]["query"],
+            "Rust release"
+        );
+        assert!(serde_json::from_value::<OllamaChatChunk>(
+            serde_json::json!({"message":{"tool_calls":[{"function":{"arguments":{}}}]}})
+        )
+        .is_err());
     }
 
     #[test]

@@ -1,10 +1,8 @@
 //! Synthetic freshness checks against a real model; performs no web requests.
-use snippet_lib::{prompt, provider, timing};
-#[path = "../src/research.rs"]
-#[allow(dead_code)]
-mod research;
 use provider::{ollama::OllamaProvider, GenerationEvent, GenerationRequest, LlmProvider};
 use serde_json::json;
+use snippet_lib::research;
+use snippet_lib::{prompt, provider};
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
 

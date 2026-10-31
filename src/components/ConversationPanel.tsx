@@ -116,6 +116,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
           {turn.reference && <p className="mt-1 text-xs text-zinc-500">{turn.reference}</p>}
         </div>}
         {conversation.expanded && <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Snippet</p>}
+        {turn.research?.phase === "unsupported" && <p className="mt-2 text-xs text-zinc-400">Web tools are unavailable with this model. Choose a tool-capable model in Settings to enable search.</p>}
         {turn.response && <MarkdownResponse content={turn.response} sources={turn.research?.sources} />}
           {!isTurnActive(turn) && turn.research && turn.research.sources.length > 0 && <details className="mt-2 text-xs text-zinc-400" onToggle={onLayoutChange}>
             <summary className="w-fit cursor-pointer rounded py-1 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-violet-400">Sources ({turn.research.sources.length}){turn.kind === "follow-up" && turn.research.phase === "answering" ? " from earlier research" : ""}</summary>

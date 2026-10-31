@@ -79,6 +79,9 @@ impl Conversation {
                 role: ChatRole::User,
                 content: instruction.into(),
                 images: None,
+                tool_calls: Vec::new(),
+                tool_name: None,
+                thinking: None,
             });
             messages
         };
@@ -86,7 +89,7 @@ impl Conversation {
         // This is a size guard, not an exact model-specific token count.
         if messages
             .iter()
-            .map(|message| message.content.len())
+            .map(ChatMessage::context_bytes)
             .sum::<usize>()
             > MAX_CONTEXT_BYTES
             || messages
@@ -117,7 +120,7 @@ impl Conversation {
         self.ensure_current(identity.conversation_id)?;
         if messages
             .iter()
-            .map(|message| message.content.len())
+            .map(ChatMessage::context_bytes)
             .sum::<usize>()
             > MAX_CONTEXT_BYTES
         {
@@ -151,6 +154,9 @@ impl Conversation {
                 role: ChatRole::Assistant,
                 content: response,
                 images: None,
+                tool_calls: Vec::new(),
+                tool_name: None,
+                thinking: None,
             });
             self.messages = pending.messages;
             self.sources = pending.sources;

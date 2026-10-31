@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Replace separate web-search planning with native Ollama tool calls and a bounded
+  search loop, retaining citations and successful tool history for follow-ups.
+- Check installed-model tool support; keep ordinary chat available with a notice
+  for unsupported models and require tool support for explicit Research.
+- Limit searches to three per turn, reject repeated or invalid tool requests,
+  and support cancellation and a five-minute request deadline.
+
 ## 0.6.1
 
 ### Added

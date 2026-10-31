@@ -1,1 +1,1 @@
-Answer the research question directly and concisely. Use web evidence to support the answer and cite supporting sources as [1], [2], etc. {{instruction}}
+Answer the research question directly and concisely. Your first response must call web_search with a focused query for this task. Use web evidence to support the answer and cite supporting sources as [1], [2], etc. {{instruction}}

@@ -1,6 +1,6 @@
 # Benchmarking Snippet
 
-The benchmark exercises the production prompt builder, Ollama search planner,
+The benchmark exercises the production prompt builder, native Ollama tool loop,
 You.com retrieval, evidence attachment, and streamed answer generation. It runs
 sequentially against your configured Ollama model and address. It does not
 simulate model responses.
@@ -23,31 +23,28 @@ Cases:
 | Case | Work |
 |---|---|
 | `direct` | Two-sentence stable explanation, with search disabled |
-| `auto_no_search` | Same instruction, with automatic search planning enabled |
-| `auto_search` | Request for current Rust release information, with automatic search planning |
+| `auto_no_search` | Same instruction, with the search tool available |
+| `auto_search` | Request for current Rust release information, with model-selected search calls |
 | `explicit_search` | Same research instruction, with forced Research |
 
-The model still makes the automatic decision: inspect `search_skipped` and
-`web_search_start` events to verify what happened. Case names express the intended
+The model still makes the automatic decision: inspect `web_search_start` events to verify what happened. Case names express the intended
 path, not an assertion that the model followed it. Answers are consumed and their
 byte counts recorded, but answer quality is not scored. The direct and automatic
-local prompts share the same instruction; the automatic path also adds Snippet's
-normal no-new-search system reminder.
+local prompts share the same instruction; the automatic path exposes the search tool and its selection instructions.
 
 ## What the trace measures
 
 One JSON object is written per request, with a monotonic timeline in milliseconds:
 
 - `prompt_preparation`: benchmark prompt construction.
-- `search_decision` or `query_planning`: complete planner call, including loading,
-  prompt processing, inference, and HTTP overhead.
 - `web_search`: total retrieval; nested spans separate free MCP initialization,
   the initialized notification, search execution, and source parsing.
-- `attach_evidence`: attaching results to the answer context.
 - `answer_request`, `answer_headers`, `answer_first_chunk`, and
   `answer_first_content`: milestones for answer startup. First content means
-  actual answer text; it excludes reasoning-only chunks.
-- `answer_generation`: complete streamed answer request.
+  streamed text; it excludes reasoning-only chunks and can include a tool-step
+  preamble that the UI later clears.
+- `answer_generation`: one streamed model step. Tool-using turns contain multiple
+  steps; the last content-producing step is the final answer.
 - `*.ollama`: server-reported loading, prompt processing, generation durations,
   token counts, and tokens per second. Missing server metrics remain absent.
 
@@ -88,27 +85,11 @@ answer text, API keys, or Ollama server addresses. Writes happen once per finish
 request; a trace write failure does not fail the answer. A process crash can leave
 the active request without a trace record.
 
-## Investigate context-size switching
+## Model context
 
-Planning and answer generation both use 16,384 tokens by default, sharing one
-context-size constant. This allows Ollama to reuse a loaded runner across both
-stages. Planning still receives bounded input and generates a short query or
-decision; setting a 16K capacity does not pad its prompt to 16K tokens.
-
-The original benchmark used 4,096 for planning and 16,384 for answering. On the
-measured gemma4:e4b setup, switching sizes repeatedly incurred long model-loading
-delays. To reproduce that older configuration for a controlled comparison:
-
-```powershell
-cargo run --manifest-path src-tauri/Cargo.toml --example benchmark -- --runs 3 --planning-context 4096 --output C:/snippet/logs/mismatched-context.jsonl
-python scripts/summarize_benchmark.py logs/mismatched-context.jsonl --output logs/mismatched-context.md
-```
-
-The override applies only to that benchmark run. Compare its planner and answer
-`load_ms`, request total, and time to first answer text with a default run. Larger
-context capacity uses more memory; the aligned default preserves the existing
-16K answer capacity. OCR has its own model and configurable context, so this
-change does not align OCR with chat or prevent reloads after switching models.
+Every model step uses the same 16,384-token context capacity so tool use does not
+change the runner's context size between requests. The separate planner and its
+`--planning-context` override have been removed. OCR retains its own settings.
 
 For repeatable comparisons, keep model, thinking setting, prompts, power mode,
 other GPU activity, and Ollama version fixed. The first run is deliberately not
@@ -127,11 +108,12 @@ behavioral evaluation against the same model:
 cargo run --manifest-path src-tauri/Cargo.toml --example evaluate_search -- gemma4:e4b logs/search-evaluation.json
 ```
 
-The evaluation uses Snippet's actual planner and answer prompts with synthetic
-inputs. It makes no web requests. It checks 30 routing cases twice, including
+The evaluation uses Snippet's production tool loop and answer prompts with synthetic
+inputs and synthetic tool results. It makes no web requests. The model must
+support native tools. It checks 30 routing cases twice, including
 capability questions, stable explanations, text transformations with search-related
 reference text, current facts, polite lookup requests, and follow-ups. A routing
-mismatch or invalid decision makes the evaluation fail.
+mismatch or invalid tool request makes the evaluation fail.
 
 The report also saves generated answers for human review: the two-turn capability
 conversation, web search disabled, a concise answer supported by synthetic

@@ -1,8 +1,6 @@
 //! Behavioral checks against a real local model. Uses no web searches or API credits.
-use snippet_lib::{prompt, provider, timing};
-#[path = "../src/research.rs"]
-#[allow(dead_code)]
-mod research;
+use snippet_lib::research;
+use snippet_lib::{prompt, provider};
 
 use prompt::{ChatMessage, ChatRole, PromptBuilder, PromptIntent, PromptRequest};
 use provider::{ollama::OllamaProvider, GenerationEvent, GenerationRequest, LlmProvider};
@@ -52,6 +50,46 @@ async fn answer(
     .await?;
     result?;
     Ok(text)
+}
+
+// Exercise the production tool loop with synthetic results; no external search.
+async fn decision(
+    provider: &OllamaProvider,
+    model: &str,
+    history: Vec<ChatMessage>,
+) -> Result<Option<String>, provider::ProviderError> {
+    let queries = std::sync::Mutex::new(Vec::new());
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    snippet_lib::agent::run(
+        provider,
+        GenerationRequest {
+            model: model.into(),
+            messages: history,
+            thinking: false,
+        },
+        true,
+        false,
+        Vec::new(),
+        CancellationToken::new(),
+        sender,
+        |query| {
+            queries.lock().unwrap().push(query);
+            async {
+                Ok(vec![research::Source {
+                    id: 1,
+                    title: "Synthetic evaluation evidence".into(),
+                    url: "https://example.com/".into(),
+                    excerpt:
+                        "Synthetic evidence only. Current facts cannot be established by this test."
+                            .into(),
+                    published_at: None,
+                }])
+            }
+        },
+        |_, _, _| {},
+    )
+    .await?;
+    Ok(queries.into_inner().unwrap().into_iter().next())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -110,12 +148,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut history = messages(instruction, topic);
                 if followup {
                     let current = history.pop().unwrap();
-                    history.push(ChatMessage { role: ChatRole::User, content: "What is Rust's latest stable release?".into(), images: None });
-                    history.push(ChatMessage { role: ChatRole::Assistant, content: "The earlier search found Rust 1.90. First, it improves performance. Second, it includes fixes. [1]".into(), images: None });
+                    history.push(ChatMessage { role: ChatRole::User, content: "What is Rust's latest stable release?".into(), images: None, tool_calls: Vec::new(), tool_name: None, thinking: None });
+                    history.push(ChatMessage { role: ChatRole::Assistant, content: "The earlier search found Rust 1.90. First, it improves performance. Second, it includes fixes. [1]".into(), images: None, tool_calls: Vec::new(), tool_name: None, thinking: None });
                     history.push(current);
                 }
-                let mode = research::SearchMode::automatic(true, instruction, topic, vec![]).unwrap();
-                let decision = tokio::time::timeout(Duration::from_secs(90), research::plan_search(&provider, model, &mode, &history, &CancellationToken::new())).await;
+                let decision = tokio::time::timeout(Duration::from_secs(90), decision(&provider, model, history)).await;
                 let (actual, query, error) = match decision {
                     Ok(Ok(query)) => (Some(query.is_some()), query, None),
                     Ok(Err(error)) => (None, None, Some(error.to_string())),
@@ -130,10 +167,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Reproduce the user's conversation with actual model replies.
         let mut conversation = messages("What can you do?", "");
         let first = answer(&provider, model, conversation.clone()).await?;
-        conversation.push(ChatMessage { role: ChatRole::Assistant, content: first.clone(), images: None });
-        conversation.push(ChatMessage { role: ChatRole::User, content: "Can you search the web?".into(), images: None });
-        let mode = research::SearchMode::automatic(true, "Can you search the web?", "", vec![]).unwrap();
-        let capability_query = research::plan_search(&provider, model, &mode, &conversation, &CancellationToken::new()).await?;
+        conversation.push(ChatMessage { role: ChatRole::Assistant, content: first.clone(), images: None, tool_calls: Vec::new(), tool_name: None, thinking: None });
+        conversation.push(ChatMessage { role: ChatRole::User, content: "Can you search the web?".into(), images: None, tool_calls: Vec::new(), tool_name: None, thinking: None });
+        let capability_query = decision(&provider, model, conversation.clone()).await?;
         if capability_query.is_some() { failures += 1; }
         let second = answer(&provider, model, conversation).await?;
         let mut disabled = messages("Can you search the web?", "");

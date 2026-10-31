@@ -35,6 +35,7 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 | `src/popupPosition.ts` | Selection anchors, monitor boundaries, and display scaling |
 | `src-tauri/src/selection.rs` and `selection/` | Accessibility capture, copy fallback, editability checks, and replacement |
 | `src-tauri/src/screen.rs` | In-memory monitor capture, region cropping, and image encoding |
+| `src-tauri/src/agent.rs` | Bounded tool loop, capability checks, tool validation, and dispatch |
 | `src-tauri/src/research.rs` | You.com retrieval, source normalization, and research grounding |
 | `src-tauri/src/search_credentials.rs` | Windows Credential Manager API key storage |
 | `src-tauri/src/ocr.rs` | Native Windows OCR |
@@ -49,6 +50,27 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 Keep capture, prompt construction, and inference separate. Native OCR receives
 original capture pixels; images encoded for Ollama are limited to a 1,920-pixel
 edge. Region capture crops before resizing.
+
+## Web tool execution
+
+Normal prompts and follow-ups expose `web_search` only when web search is enabled
+and `/api/show` confirms the installed model has the `tools` capability. Missing
+capability metadata is treated as unknown. Unsupported models retain ordinary
+chat and show a notice; explicit Research fails clearly instead of answering
+without research. Quick actions omit tools.
+
+The provider streams assistant text and collects native tool calls and reasoning.
+The loop validates names and query arguments before dispatching to You.com, then
+returns results as `tool` messages with stable source IDs. The Research action
+instructs the first model step to request a search; an answer without a search is
+rejected. There is no separate search-decision or query-planning model request.
+
+A turn permits three searches and at most four model steps. Repeated queries,
+unknown tools, invalid arguments, oversized context, and search failures stop the
+turn. The app applies a five-minute deadline and cancellation across the loop.
+Tool-step preambles are cleared from the response view; final text still streams.
+Only successful turns commit tool history and sources. If the user switches to a
+model without tools, earlier evidence is retained as marked reference text.
 
 ## Local configuration
 
@@ -101,9 +123,8 @@ Enable development tools as above and restart `npm run tauri dev`. Expand
 The inspector captures the serialized body immediately before each Ollama HTTP
 request, showing the model, options, schemas, and final messages for:
 
-- `search_decision`: automatic search routing;
-- `query_planning`: explicit Research query planning;
-- `answer_generation`: answer messages including runtime context and any evidence;
+- `answer_generation`: each model step, including the available tool schema,
+  native assistant tool calls, tool results, runtime context, and evidence;
 - `ocr`: Ollama OCR (native Windows OCR makes no model request).
 
 Expand a recorded request to inspect its JSON. While open, the panel refreshes

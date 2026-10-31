@@ -1,8 +1,5 @@
-//! Bounded web retrieval and local search routing; synthesis stays in Ollama.
-use crate::{
-    prompt::ChatMessage,
-    provider::{ollama::OllamaProvider, ProviderError},
-};
+//! Bounded web retrieval; tool orchestration and synthesis stay local.
+use crate::{prompt::ChatMessage, provider::ProviderError};
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -24,73 +21,21 @@ pub struct Source {
     pub published_at: Option<String>,
 }
 
-pub struct ResearchPlan {
-    pub topic: String,
-    pub instruction: String,
-    pub api_key: Option<String>,
-}
-
 pub enum SearchMode {
-    Explicit(ResearchPlan),
-    Automatic {
-        topic: String,
-        instruction: String,
-        previous_sources: Vec<Source>,
-    },
+    Explicit,
+    Automatic { previous_sources: Vec<Source> },
 }
 
 impl SearchMode {
-    pub fn automatic(
-        enabled: bool,
-        instruction: &str,
-        topic: &str,
-        previous_sources: Vec<Source>,
-    ) -> Option<Self> {
-        enabled.then(|| Self::Automatic {
-            topic: bounded(topic, 3000),
-            instruction: bounded(instruction, 3000),
-            previous_sources,
-        })
+    pub fn automatic(enabled: bool, previous_sources: Vec<Source>) -> Option<Self> {
+        enabled.then_some(Self::Automatic { previous_sources })
     }
 
     pub fn previous_sources(&self) -> &[Source] {
         match self {
-            Self::Explicit(_) => &[],
-            Self::Automatic {
-                previous_sources, ..
-            } => previous_sources,
+            Self::Explicit => &[],
+            Self::Automatic { previous_sources } => previous_sources,
         }
-    }
-}
-
-pub async fn plan_search(
-    provider: &OllamaProvider,
-    model: &str,
-    mode: &SearchMode,
-    messages: &[ChatMessage],
-    cancellation: &CancellationToken,
-) -> Result<Option<String>, ProviderError> {
-    match mode {
-        SearchMode::Explicit(plan) => query(provider, model, plan, cancellation).await.map(Some),
-        SearchMode::Automatic {
-            topic, instruction, ..
-        } => {
-            let content = provider
-                .search_decision(model, topic, instruction, messages, cancellation)
-                .await?;
-            parse_decision(&content)
-        }
-    }
-}
-
-fn parse_decision(content: &str) -> Result<Option<String>, ProviderError> {
-    let value: Value = serde_json::from_str(content).map_err(|_| failed("The local model could not decide whether to search. Retry or disable web search in Settings."))?;
-    match value.get("search").and_then(Value::as_bool) {
-        // A no-search decision is authoritative even if a small model supplies
-        // an unused query string instead of null. It cannot cause web access.
-        Some(false) => Ok(None),
-        Some(true) => parse_query(content).map(Some),
-        _ => Err(failed("The local model returned an invalid search decision. Retry or disable web search in Settings.")),
     }
 }
 
@@ -454,35 +399,6 @@ fn parse_sources(value: &Value) -> Vec<Source> {
     sources
 }
 
-pub async fn query(
-    provider: &OllamaProvider,
-    model: &str,
-    plan: &ResearchPlan,
-    cancellation: &CancellationToken,
-) -> Result<String, ProviderError> {
-    let content = provider
-        .research_query(model, &plan.topic, &plan.instruction, cancellation)
-        .await?;
-    parse_query(&content)
-}
-
-fn parse_query(content: &str) -> Result<String, ProviderError> {
-    let parsed: Value = serde_json::from_str(content).map_err(|_| {
-        failed("The local model could not form a search query. Try a shorter research question.")
-    })?;
-    let query = parsed
-        .get("query")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if query.is_empty() || query.len() > 400 || query.chars().any(char::is_control) {
-        return Err(failed(
-            "The local model returned an invalid search query. Try a more specific question.",
-        ));
-    }
-    Ok(query.into())
-}
-
 pub fn ground(messages: &mut [ChatMessage], sources: &[Source]) {
     let rules = crate::prompt::templates::text(crate::prompt::templates::WEB_EVIDENCE);
     if !messages[0].content.contains(rules.as_ref()) {
@@ -513,11 +429,17 @@ mod tests {
                 role: crate::prompt::ChatRole::System,
                 content: "System".into(),
                 images: None,
+                tool_calls: Vec::new(),
+                tool_name: None,
+                thinking: None,
             },
             ChatMessage {
                 role: crate::prompt::ChatRole::User,
                 content: "Weather now?".into(),
                 images: None,
+                tool_calls: Vec::new(),
+                tool_name: None,
+                thinking: None,
             },
         ];
         let sources = vec![Source {
@@ -546,31 +468,6 @@ mod tests {
         assert!(messages[0].content.contains("Retrieval time is not"));
         assert!(messages[1].content.contains("current device-clock context"));
         assert!(!messages[1].content.contains("cannot be verified"));
-    }
-
-    #[test]
-    fn automatic_decisions_are_strict_and_disabled_search_skips_routing() {
-        assert!(SearchMode::automatic(false, "Research restaurants", "", Vec::new()).is_none());
-        assert_eq!(
-            parse_decision(r#"{"search":false,"query":null}"#).unwrap(),
-            None
-        );
-        assert_eq!(
-            parse_decision(r#"{"search":true,"query":"Santa Clara restaurants"}"#).unwrap(),
-            Some("Santa Clara restaurants".into())
-        );
-        for invalid in [
-            r#"{"search":"true","query":"test"}"#,
-            r#"{"query":"test"}"#,
-            r#"{"search":true,"query":null}"#,
-            "not JSON",
-        ] {
-            assert!(parse_decision(invalid).is_err());
-        }
-        assert_eq!(
-            parse_decision(r#"{"search":false,"query":"unused"}"#).unwrap(),
-            None
-        );
     }
 
     #[test]
@@ -615,137 +512,6 @@ mod tests {
             .user_message()
             .contains("limit"));
         assert_eq!(bounded("crab 🦀", 7), "crab ");
-    }
-
-    #[test]
-    fn query_validation_rejects_missing_multiline_and_oversized_output() {
-        assert_eq!(
-            parse_query(r#"{"query":"Windows OCR accuracy"}"#).unwrap(),
-            "Windows OCR accuracy"
-        );
-        for value in [
-            r#"{"query":""}"#.to_owned(),
-            r#"{"query":"line one\nline two"}"#.to_owned(),
-            json!({"query":"x".repeat(401)}).to_string(),
-            "not JSON".into(),
-        ] {
-            assert!(parse_query(&value).is_err());
-        }
-        assert!(
-            rpc_result(&json!({"error":{"code":429,"message":"rate limit"}}))
-                .unwrap_err()
-                .user_message()
-                .contains("limit")
-        );
-    }
-
-    #[tokio::test]
-    async fn explicit_and_automatic_planning_use_one_local_call_with_distinct_contracts() {
-        use std::io::{Read, Write};
-        for (automatic, search) in [(false, true), (true, true), (true, false)] {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let base = format!("http://{}", listener.local_addr().unwrap());
-            let server = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
-                    .unwrap();
-                let mut data = Vec::new();
-                let (offset, length) = loop {
-                    let mut chunk = [0; 4096];
-                    let count = stream.read(&mut chunk).unwrap();
-                    assert!(count > 0);
-                    data.extend_from_slice(&chunk[..count]);
-                    if let Some(offset) = data.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                        let headers = String::from_utf8_lossy(&data[..offset]).to_lowercase();
-                        let length: usize = headers
-                            .lines()
-                            .find_map(|line| line.strip_prefix("content-length:"))
-                            .unwrap()
-                            .trim()
-                            .parse()
-                            .unwrap();
-                        break (offset + 4, length);
-                    }
-                };
-                while data.len() < offset + length {
-                    let mut chunk = [0; 4096];
-                    let count = stream.read(&mut chunk).unwrap();
-                    assert!(count > 0);
-                    data.extend_from_slice(&chunk[..count]);
-                }
-                let request: Value =
-                    serde_json::from_slice(&data[offset..offset + length]).unwrap();
-                assert_eq!(request["model"], "test-model");
-                assert_eq!(request["stream"], false);
-                assert_eq!(request["think"], false);
-                assert_eq!(request["options"]["num_ctx"], 16_384);
-                if automatic {
-                    assert_eq!(request["format"]["properties"]["search"]["type"], "boolean");
-                    assert_eq!(request["options"]["num_predict"], 160);
-                    let payload: Value =
-                        serde_json::from_str(request["messages"][1]["content"].as_str().unwrap())
-                            .unwrap();
-                    assert_eq!(payload["currentInstruction"], "Compare accuracy");
-                    assert_eq!(payload["context"]["referenceText"], "Windows OCR");
-                    assert_eq!(
-                        payload["context"]["previousConversation"][0]["content"],
-                        "Earlier answer [1]"
-                    );
-                    assert!(!payload.to_string().contains("private-image-bytes"));
-                } else {
-                    assert_eq!(request["format"], "json");
-                    assert_eq!(request["options"]["num_predict"], 128);
-                }
-                let decision = if automatic {
-                    if search {
-                        json!({"search":true,"query":"Windows OCR accuracy"})
-                    } else {
-                        json!({"search":false,"query":null})
-                    }
-                } else {
-                    json!({"query":"Windows OCR accuracy"})
-                };
-                let result = json!({"message":{"content":decision.to_string()}}).to_string();
-                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",result.len(),result).unwrap();
-            });
-            let provider = OllamaProvider::new(base).unwrap();
-            let plan = ResearchPlan {
-                topic: "Windows OCR".into(),
-                instruction: "Compare accuracy".into(),
-                api_key: None,
-            };
-            let mode = if automatic {
-                SearchMode::automatic(true, &plan.instruction, &plan.topic, Vec::new()).unwrap()
-            } else {
-                SearchMode::Explicit(plan)
-            };
-            let messages = vec![
-                ChatMessage {
-                    role: crate::prompt::ChatRole::Assistant,
-                    content: "Earlier answer [1]".into(),
-                    images: Some(vec!["private-image-bytes".into()]),
-                },
-                ChatMessage {
-                    role: crate::prompt::ChatRole::User,
-                    content: "Current task".into(),
-                    images: None,
-                },
-            ];
-            assert_eq!(
-                plan_search(
-                    &provider,
-                    "test-model",
-                    &mode,
-                    &messages,
-                    &CancellationToken::new()
-                )
-                .await
-                .unwrap(),
-                search.then(|| "Windows OCR accuracy".to_string())
-            );
-            server.join().unwrap();
-        }
     }
 
     // Exercise the real HTTP client and MCP handshake without external traffic.
@@ -860,77 +626,6 @@ mod tests {
             Err(ProviderError::Cancelled)
         ));
     }
-    #[tokio::test]
-    async fn cancelling_query_planning_drops_an_in_flight_ollama_request() {
-        for automatic in [false, true] {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let base = format!("http://{}", listener.local_addr().unwrap());
-            let (connected, connection) = tokio::sync::oneshot::channel();
-            let (done, finished) = std::sync::mpsc::channel();
-            let server = std::thread::spawn(move || {
-                let (_stream, _) = listener.accept().unwrap();
-                let _ = connected.send(());
-                finished.recv_timeout(Duration::from_secs(4)).unwrap();
-            });
-            let provider = OllamaProvider::new(base).unwrap();
-            let cancellation = CancellationToken::new();
-            let token = cancellation.clone();
-            let task = tokio::spawn(async move {
-                if automatic {
-                    provider
-                        .search_decision("test-model", "topic", "question", &[], &token)
-                        .await
-                } else {
-                    provider
-                        .research_query("test-model", "topic", "question", &token)
-                        .await
-                }
-            });
-            connection.await.unwrap();
-            cancellation.cancel();
-            let result = tokio::time::timeout(Duration::from_secs(2), task)
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(result, Err(ProviderError::Cancelled)));
-            done.send(()).unwrap();
-            server.join().unwrap();
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a running Ollama server and SNIPPET_TEST_MODEL; does not access the web"]
-    async fn live_local_search_routing_smoke() {
-        let model = std::env::var("SNIPPET_TEST_MODEL")
-            .expect("Set SNIPPET_TEST_MODEL to an installed chat model");
-        let provider = OllamaProvider::new("http://localhost:11434").unwrap();
-        for (instruction, topic, expected) in [
-            ("Research restaurants in Santa Clara", "", true),
-            (
-                "Rewrite this paragraph more concisely",
-                "The quick brown fox jumped over the fence in a very quick way.",
-                false,
-            ),
-            (
-                "Translate this into French",
-                "Research restaurants in Santa Clara",
-                false,
-            ),
-            (
-                "Explain what a binary search tree is. Do not search the web.",
-                "",
-                false,
-            ),
-        ] {
-            let mode = SearchMode::automatic(true, instruction, topic, Vec::new()).unwrap();
-            let result = plan_search(&provider, &model, &mode, &[], &CancellationToken::new())
-                .await
-                .unwrap();
-            println!("{instruction}: {result:?}");
-            assert_eq!(result.is_some(), expected);
-        }
-    }
-
     #[tokio::test]
     #[ignore = "requires live Internet access to You.com; uses one free search"]
     async fn live_free_search_smoke() {

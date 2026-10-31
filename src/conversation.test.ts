@@ -12,6 +12,20 @@ function streaming() {
 }
 
 describe("conversation lifecycle", () => {
+  it("clears tool preambles between steps and ignores stale content resets", () => {
+    let state = streaming();
+    expect(reduce(state, { type: "content-reset", event: { ...event, requestId: 99 } })).toBe(state);
+    state = reduce(state, { type: "content-reset", event });
+    expect(state.turns[0].response).toBe("");
+    expect(state.turns[0].status).toBe("loading");
+    state = reduce(state, { type: "research", event, research: { phase: "searching", query: "test", sources: [] } });
+    expect(generationLabel(state.turns[0])).toBe("Searching...");
+    state = reduce(state, { type: "chunk", event, delta: "Grounded answer [1]" });
+    state = reduce(state, { type: "complete", event });
+    expect(reduce(state, { type: "content-reset", event })).toBe(state);
+    expect(state.turns[0].response).toBe("Grounded answer [1]");
+  });
+
   it("shows model loading only during preparation and restores research or answer statuses", () => {
     let state = reduce(empty, { type: "submit", identity, prompt: "Explain", kind: "initial" });
     expect(generationLabel(state.turns[0])).toBe("Thinking...");

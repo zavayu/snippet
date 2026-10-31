@@ -46,6 +46,9 @@ pub fn set_web_search_context(messages: &mut Vec<ChatMessage>, enabled: bool) {
             role: ChatRole::System,
             content,
             images: None,
+            tool_calls: Vec::new(),
+            tool_name: None,
+            thinking: None,
         },
     );
 }
@@ -88,6 +91,7 @@ pub enum ChatRole {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -96,6 +100,36 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn context_bytes(&self) -> usize {
+        self.content.len()
+            + self.thinking.as_ref().map_or(0, String::len)
+            + self.tool_name.as_ref().map_or(0, String::len)
+            + self
+                .tool_calls
+                .iter()
+                .map(|call| call.function.name.len() + call.function.arguments.to_string().len())
+                .sum::<usize>()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ToolCall {
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ToolFunction {
+    pub name: String,
+    pub arguments: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,11 +180,17 @@ impl PromptBuilder {
                 role: ChatRole::System,
                 content: templates::text(templates::ASSISTANT).into_owned(),
                 images: None,
+                tool_calls: Vec::new(),
+                tool_name: None,
+                thinking: None,
             },
             ChatMessage {
                 role: ChatRole::User,
                 content: user_content,
                 images: None,
+                tool_calls: Vec::new(),
+                tool_name: None,
+                thinking: None,
             },
         ])
     }

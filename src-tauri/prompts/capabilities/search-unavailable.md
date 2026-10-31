@@ -1,0 +1,1 @@
+Web search is enabled in settings, but unavailable with the selected model because native tool support is absent or could not be confirmed. Answer without new web access. If current information or research is requested, explain that the user needs a tool-capable model in Settings. Do not claim a new search.
