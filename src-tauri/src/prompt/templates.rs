@@ -28,6 +28,10 @@ pub const SEARCH_DISABLED: Template = Template {
     name: "capabilities/search-disabled",
     source: include_str!("../../prompts/capabilities/search-disabled.md"),
 };
+pub const ATTACHED_FILES: Template = Template {
+    name: "attached-files",
+    source: include_str!("../../prompts/attached-files.md"),
+};
 pub const TOOL_LOOP: Template = Template {
     name: "tool-loop",
     source: include_str!("../../prompts/tool-loop.md"),
@@ -80,6 +84,7 @@ pub const ALL: &[Template] = &[
     SEARCH_ENABLED,
     SEARCH_DISABLED,
     TOOL_LOOP,
+    ATTACHED_FILES,
     SEARCH_UNAVAILABLE,
     WEB_EVIDENCE,
     FRESHNESS,
@@ -196,6 +201,7 @@ mod tests {
             ("utc_time", "2026-10-22T22:00:00Z"),
             ("local_time", "2026-10-22T17:00:00-05:00"),
             ("instruction", "task"),
+            ("files", "[]"),
         ];
         let mut names = std::collections::HashSet::new();
         for template in ALL {

@@ -23,6 +23,7 @@ struct PendingTurn {
 #[derive(Default)]
 pub struct Conversation {
     id: u64,
+    pub attachments: crate::attachments::Attachments,
     messages: Vec<ChatMessage>,
     pending: Option<PendingTurn>,
     sources: Vec<crate::research::Source>,
@@ -45,7 +46,19 @@ impl Conversation {
         self.messages.clear();
         self.pending = None;
         self.sources.clear();
+        self.attachments.clear();
         true
+    }
+
+    pub fn edit_attachments(
+        &mut self,
+        id: u64,
+    ) -> Result<&mut crate::attachments::Attachments, String> {
+        self.ensure_current(id)?;
+        if self.pending.is_some() {
+            return Err("Wait for the current response before changing attachments.".into());
+        }
+        Ok(&mut self.attachments)
     }
 
     pub fn begin(
@@ -189,6 +202,33 @@ mod tests {
         .unwrap();
         messages[1].images = Some(vec!["original-image".into()]);
         messages
+    }
+
+    #[test]
+    fn attachments_survive_failed_turns_but_reset_clears_them_and_rejects_stale_edits() {
+        let mut session = Conversation::default();
+        session.reset(1);
+        let files = session
+            .edit_attachments(1)
+            .unwrap()
+            .add("notes.txt".into(), b"reference text".to_vec())
+            .unwrap();
+        session
+            .begin(identity(1, 1), Some(initial()), None)
+            .unwrap();
+        assert!(session.edit_attachments(1).is_err());
+        session.finish(identity(1, 1), None);
+        assert_eq!(
+            session
+                .attachments
+                .read(&files[0].file_id, 1, 1)
+                .unwrap()
+                .content,
+            "reference text"
+        );
+        session.reset(2);
+        assert!(session.attachments.infos().is_empty());
+        assert!(session.edit_attachments(1).is_err());
     }
 
     #[test]

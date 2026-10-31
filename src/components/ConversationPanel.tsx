@@ -52,9 +52,12 @@ type Props = {
   replacementId: number | null;
   onReplacementUsed: (id: number) => void;
   onLayoutChange?: () => void;
+  submissionBlocked?: boolean;
+  composerAction?: ReactNode;
+  composerAttachments?: ReactNode;
 };
 
-export function ConversationPanel({ conversation, onContinue, onNewConversation, onSubmit, onRetry, onStop, replacementId, onReplacementUsed, onLayoutChange }: Props) {
+export function ConversationPanel({ conversation, onContinue, onNewConversation, onSubmit, onRetry, onStop, replacementId, onReplacementUsed, onLayoutChange, submissionBlocked = false, composerAction, composerAttachments }: Props) {
   const [draft, setDraft] = useState("");
   const [replacing, setReplacing] = useState(false);
   const [replaceError, setReplaceError] = useState<string | null>(null);
@@ -95,8 +98,16 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
     lastTurnId.current = last?.id;
   }, [conversation]);
 
+  useLayoutEffect(() => {
+    const textarea = input.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${Math.max(32, Math.min(textarea.scrollHeight, 128))}px`;
+    onLayoutChange?.();
+  }, [draft, conversation.expanded]);
+
   const submit = () => {
-    if (!draft.trim() || busy || !hasCompletedTurn) return;
+    if (!draft.trim() || busy || submissionBlocked || !hasCompletedTurn) return;
     onSubmit(draft.trim());
     setDraft("");
     followBottom.current = true;
@@ -158,17 +169,19 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
 
     {replaceError && <p role="alert" className="mt-2 text-xs text-amber-200">{replaceError}</p>}
 
+    {composerAttachments}
     {conversation.expanded && <form className="mt-2 flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950/50 p-2"
       onSubmit={(event) => { event.preventDefault(); submit(); }}>
-      <textarea ref={input} aria-label="Follow-up question" placeholder="Ask a follow-up…" rows={2}
+      {composerAction}
+      <textarea ref={input} aria-label="Follow-up question" placeholder="Ask a follow-up…" rows={1}
         title="Enter to send; Shift+Enter for a new line"
-        className="max-h-32 min-w-0 flex-1 resize-none bg-transparent px-1 py-1 text-sm text-zinc-100 outline-none placeholder:text-zinc-500 disabled:opacity-50"
+        className="block h-8 min-h-8 max-h-32 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-500 disabled:opacity-50"
         value={draft} disabled={!hasCompletedTurn}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => handlePromptKeyDown(event, submit)} />
       <button type={busy ? "button" : "submit"} aria-label={busy ? "Stop response" : "Send message"} title={busy ? "Stop response" : "Send message"}
         className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-violet-500 text-white transition-colors hover:bg-violet-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400 disabled:cursor-not-allowed disabled:opacity-40"
-        disabled={!busy && (!hasCompletedTurn || !draft.trim())}
+        disabled={!busy && (submissionBlocked || !hasCompletedTurn || !draft.trim())}
         onClick={busy ? onStop : undefined}>
         <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4.5 fill-none stroke-current stroke-2" strokeLinecap="round" strokeLinejoin="round">
           {busy ? <rect x="6" y="6" width="12" height="12" rx="1" className="fill-current stroke-none" /> : <path d="M12 19V5m-6 6 6-6 6 6" />}

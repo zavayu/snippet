@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod attachments;
 mod conversation;
 mod ocr;
 pub mod prompt;
@@ -553,6 +554,8 @@ macro_rules! snippet_command_handler {
             generate_for_selection,
             continue_conversation,
             reset_conversation,
+            attach_file,
+            remove_attached_file,
             read_screen,
             cancel_generation,
             copy_response,
@@ -581,6 +584,8 @@ macro_rules! snippet_command_handler {
             generate_for_selection,
             continue_conversation,
             reset_conversation,
+            attach_file,
+            remove_attached_file,
             read_screen,
             cancel_generation,
             copy_response,
@@ -778,6 +783,7 @@ fn generate_for_selection(
         generation_state.cancel();
     }
     let messages = session.begin(request.identity, Some(messages), None)?;
+    let attachments = session.attachments.clone();
     Ok(stream_conversation(
         app,
         (*generation_state).clone(),
@@ -791,6 +797,7 @@ fn generate_for_selection(
         request.identity,
         research.or(automatic_search),
         snapshot.config.web_search_enabled,
+        attachments,
     ))
 }
 
@@ -822,6 +829,7 @@ fn continue_conversation(
         .map_err(|_| "Conversation is unavailable.")?;
     let search = research::SearchMode::automatic(true, session.sources());
     let messages = session.begin(request.identity, None, Some(request.instruction))?;
+    let attachments = session.attachments.clone();
     Ok(stream_conversation(
         app,
         (*generation_state).clone(),
@@ -835,7 +843,40 @@ fn continue_conversation(
         request.identity,
         search,
         snapshot.config.web_search_enabled,
+        attachments,
     ))
+}
+
+#[tauri::command]
+fn attach_file(
+    conversation_id: u64,
+    name: String,
+    bytes: Vec<u8>,
+    conversation: State<ConversationState>,
+    generation: State<GenerationState>,
+) -> Result<Vec<attachments::AttachmentInfo>, String> {
+    let mut session = conversation
+        .0
+        .lock()
+        .map_err(|_| "Conversation is unavailable.")?;
+    if session.reset(conversation_id) {
+        generation.cancel();
+    }
+    session.edit_attachments(conversation_id)?.add(name, bytes)
+}
+
+#[tauri::command]
+fn remove_attached_file(
+    conversation_id: u64,
+    file_id: String,
+    conversation: State<ConversationState>,
+) -> Result<Vec<attachments::AttachmentInfo>, String> {
+    conversation
+        .0
+        .lock()
+        .map_err(|_| "Conversation is unavailable.")?
+        .edit_attachments(conversation_id)?
+        .remove(&file_id)
 }
 
 #[tauri::command]
@@ -863,6 +904,7 @@ fn stream_conversation(
     identity: TurnIdentity,
     research: Option<research::SearchMode>,
     web_search_enabled: bool,
+    attachments: attachments::Attachments,
 ) -> GenerationStarted {
     crate::prompt::set_web_search_context(&mut request.messages, web_search_enabled);
     let (request_id, cancellation) = generation_state.begin();
@@ -918,7 +960,10 @@ fn stream_conversation(
                 let (messages, sources) = agent::run(
                     &provider,
                     request,
-                    enabled,
+                    agent::ToolContext {
+                        web_enabled: enabled,
+                        attachments: attachments.infos(),
+                    },
                     explicit,
                     previous_sources,
                     cancellation.clone(),
@@ -926,6 +971,7 @@ fn stream_conversation(
                     |action| {
                         let token = search_token.clone();
                         let trace = provider_trace.clone();
+                        let files = attachments.clone();
                         async move {
                             match action {
                                 agent::ToolRequest::Search(query) => {
@@ -943,6 +989,14 @@ fn stream_conversation(
                                     }
                                     result.map(agent::ToolOutput::Webpage)
                                 }
+                                agent::ToolRequest::ReadAttachedFile {
+                                    file_id,
+                                    start_line,
+                                    line_count,
+                                } => files
+                                    .read(&file_id, start_line, line_count)
+                                    .map(agent::ToolOutput::AttachedFile)
+                                    .map_err(ProviderError::RequestFailed),
                             }
                         }
                     },

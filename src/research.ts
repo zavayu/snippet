@@ -6,7 +6,7 @@ export type ResearchSource = {
   publishedAt: string | null;
 };
 export type ResearchInfo = {
-  phase: "unsupported" | "deciding" | "answering" | "planning" | "searching" | "reading" | "summarizing";
+  phase: "unsupported" | "deciding" | "answering" | "planning" | "searching" | "reading" | "reading-file" | "summarizing";
   query: string | null;
   sources: ResearchSource[];
 };

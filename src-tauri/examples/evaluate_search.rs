@@ -90,6 +90,7 @@ async fn decision(
                         retrieved_at_utc: chrono::Utc::now().to_rfc3339(), truncated: false,
                     })
                 }
+                snippet_lib::agent::ToolRequest::ReadAttachedFile { .. } => unreachable!("No files are attached in this evaluation"),
             };
             async move { Ok(result) }
         },

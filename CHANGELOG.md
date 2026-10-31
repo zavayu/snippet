@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add text/Markdown/source file attachments with an explicit picker, removable
+  file chips, and a `read_attached_file` tool for bounded line-range reads.
+- Retain in-memory snapshots across follow-ups and retries, clear them on reset,
+  and allow file reading independently of web search.
+
 - Add `read_webpage` for direct URL reading and inspecting search results, with
   main-content Markdown extraction, citations, and a "Reading webpage" status.
 - Bound page downloads, redirects, extracted content, and tool calls; report

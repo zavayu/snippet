@@ -82,6 +82,7 @@ export function generationLabel(turn?: ChatTurn): string {
     case "planning": return "Preparing search...";
     case "searching": return "Searching...";
     case "reading": return "Reading webpage...";
+    case "reading-file": return "Reading file...";
     case "summarizing": return "Summarizing...";
     default: return "Thinking...";
   }

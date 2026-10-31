@@ -35,6 +35,8 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 | `src/popupPosition.ts` | Selection anchors, monitor boundaries, and display scaling |
 | `src-tauri/src/selection.rs` and `selection/` | Accessibility capture, copy fallback, editability checks, and replacement |
 | `src-tauri/src/screen.rs` | In-memory monitor capture, region cropping, and image encoding |
+| `src-tauri/src/attachments.rs` | Validated in-memory text snapshots and bounded line reads |
+| `src/components/FileAttachments.tsx` | Explicit file selection, attachment list, and removal |
 | `src-tauri/src/agent.rs` | Bounded tool loop, capability checks, tool validation, and dispatch |
 | `src-tauri/src/webpage.rs` | Public HTML retrieval, redirect/DNS validation, and main-content extraction |
 | `src-tauri/src/research.rs` | You.com retrieval, source normalization, and research grounding |
@@ -67,7 +69,7 @@ returns results as `tool` messages with stable source IDs. The Research action
 instructs the first model step to request a search; an answer without a search is
 rejected. There is no separate search-decision or query-planning model request.
 
-A turn permits three searches, three page reads, and at most seven model steps. Repeated requests,
+A turn permits three searches, three page reads, five file reads, and at most twelve model steps. Repeated requests,
 unknown tools, invalid arguments, oversized context, and search failures stop the
 turn. The app applies a five-minute deadline and cancellation across the loop.
 Tool-step preambles are cleared from the response view; final text still streams.
@@ -91,6 +93,27 @@ Non-HTML, non-UTF-8, login/challenge pages, and empty shells return clear errors
 Every target and redirect must use HTTP/HTTPS on standard web ports with no URL
 credentials. DNS answers must all be public and are pinned for the request;
 automatic redirects and proxies are disabled to prevent private-network access.
+
+## Attached-file execution
+
+The WebView's native file input reads explicitly selected bytes; `attach_file`
+validates UTF-8 text, filename/extension, per-file size (512 KB), count (five), and
+total size (2 MB). The backend never accepts a filesystem path. Snapshots belong
+to `Conversation` and are cleared on reset. Attachment edits are rejected during
+a pending turn; each accepted turn receives an immutable snapshot.
+
+`ToolContext` separates web availability from attachment metadata. A tool-capable
+model can call `read_attached_file` with an authorized ID, a one-based start line,
+and 1–120 lines. Only metadata enters the initial model request. Results contain
+filename, line range, total lines, text, and truncation status; each is bounded to
+6,000 bytes and fitted to the remaining serialized conversation budget. No web
+citation is invented for local files. Unsupported models fail clearly so files
+are not silently ignored.
+
+Removal revokes future reads, while successful prior excerpts remain in history.
+IDs are not reused after reset, and stale conversation IPC cannot attach/remove
+files in a newer session. The UI blocks submission during attachment updates and
+ignores late upload results after conversation changes. No files are persisted.
 
 ## Local configuration
 
@@ -153,7 +176,7 @@ not proof of server receipt or success. The older **Base Prompt Preview** shows
 only the initial prompt, before runtime context, history, and grounding.
 
 Capture starts disabled and keeps the most recent ten requests in memory only.
-It includes selected text, conversation history, and web evidence; image arrays
+It includes selected text, conversation history, web evidence, and attached-file metadata/excerpts; image arrays
 retain their count but replace payloads with `<image data omitted>`. Bodies over
 256 KiB after image removal are explicitly omitted. **Clear** removes the history;
 turning capture off clears it and stops collection. Restarting the app also clears

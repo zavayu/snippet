@@ -43,6 +43,7 @@ describe("conversation interface", () => {
     ["planning", "Preparing search..."],
     ["searching", "Searching..."],
     ["reading", "Reading webpage..."],
+    ["reading-file", "Reading file..."],
     ["summarizing", "Summarizing..."],
     ["answering", "Thinking..."],
   ] as const)("shows pending status during %s with retained sources", (phase, label) => {

@@ -10,6 +10,7 @@ disk. This refactor preserves the existing instruction wording.
 | `assistant.md` | First answer system message |
 | `runtime-context.md`, `clock.md`, `capabilities/*.md` | Runtime system message, refreshed for each answer |
 | `actions/*.md` | Quick-action or explicit Research task in the user message |
+| `attached-files.md` | Per-turn attachment metadata and file-reading instructions |
 | `tool-loop.md` | Per-turn tool selection and evidence-reuse instructions |
 | `web-evidence.md` | Runtime system message and tool-result evidence rules |
 | `freshness.md` | Evidence message when grounding with search results |
@@ -23,6 +24,7 @@ Templates use literal `{{name}}` placeholders. Bindings are supplied by Rust:
 | `clock` | `utc_time`, `local_time` from one device-clock snapshot |
 | `runtime-context` | `capabilities`, `clock_context` |
 | `actions/research` | `instruction` |
+| `attached-files` | `files` (serialized attachment metadata) |
 
 Substitution is single-pass: placeholder-looking text inside user input stays
 literal. Missing or malformed placeholders fail explicitly. Keep placeholders in

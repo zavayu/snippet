@@ -27,6 +27,8 @@ a section, refine a draft, or keep the conversation going without switching apps
 - **Ask about an image.** Attach a screenshot to a vision-capable Ollama model.
 - **Research a topic.** Search the web with You.com, then get an Ollama summary
   with clickable citations and sources.
+- **Ask about files.** Attach text, Markdown, or source files and compare them
+  with selected text, ask questions, or request a summary using a tool-capable model.
 - **Continue the conversation.** Ask follow-up questions with the original
   selection or capture and previous completed replies as context.
 - **Use the answer where you work.** Copy a response, or replace the original
@@ -155,6 +157,31 @@ turn, and can answer time questions from that context. It has no dedicated weath
 feed, so weather accuracy still depends on suitable dated evidence. Evidence includes its retrieval timestamp,
 which is distinct from a page's publication date and an observation's timestamp.
 
+## File attachments
+
+Click the **+** button beside the prompt, choose a text, Markdown, or source file, then type your
+instruction. For example, attach assignment requirements and ask, "Does the
+selected answer meet these requirements?" Files can also be added between turns.
+
+Attach up to five UTF-8 text files, each at most 512 KB and totaling at most 2 MB.
+PDFs, Word documents, images, and binary files are not supported by this tool.
+
+Snippet keeps in-memory snapshots of the selected files. A tool-capable model sees
+filenames, IDs, and line counts, then requests relevant line ranges. Each turn
+allows five file reads, each up to 120 lines and 6,000 bytes, with additional
+trimming when conversation space is limited. Responses can refer to filenames
+and line numbers; partial excerpts are explicitly marked for the model.
+
+File reading works with web search disabled. Files remain attached across
+follow-ups and retries. Remove a file with its × button to stop future reads;
+previously read excerpts remain in conversation history. Starting a new
+conversation, recapturing context, or closing the popup clears attachments.
+Changing the original file on disk does not update its attached snapshot.
+
+Attachment metadata and requested excerpts go to your configured Ollama server.
+Attaching a file does not upload it to You.com or grant access to other files.
+Web searches, when enabled and used, can include details from the conversation.
+
 ## Conversations and replacement
 
 After an answer finishes, choose **Continue conversation** to ask a follow-up.
@@ -200,8 +227,8 @@ formatting.
 Text and images used for inference go to the Ollama address configured in
 Settings. The default is your local machine; a remote address sends that content
 to the configured server. Research sends its generated search query to You.com; page reads contact the
-requested website directly. Windows OCR processes captures locally. Conversations
-and captures are held in memory, while preferences are saved locally.
+requested website directly. Windows OCR processes captures locally. Conversations, captures,
+and attached files are held in memory, while preferences are saved locally.
 
 Snippet checks GitHub Releases for updates automatically once a day unless you
 disable automatic checks. You can also check through the tray menu or

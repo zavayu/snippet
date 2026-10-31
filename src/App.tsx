@@ -18,6 +18,7 @@ import { RequestInspector } from "./components/RequestInspector";
 import { UpdatesPanel } from "./components/UpdatesPanel";
 import { updateController, useUpdates } from "./useUpdates";
 import { conversationReducer, generationLabel, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
+import { AttachFilesButton, useFileAttachments, type AttachedFile } from "./components/FileAttachments";
 import { ConversationPanel } from "./components/ConversationPanel";
 import { handlePromptKeyDown } from "./promptKeyboard";
 import { popupPosition, type SelectionBounds } from "./popupPosition";
@@ -207,6 +208,11 @@ function App() {
   const [conversation, dispatchConversation] = useReducer(conversationReducer, {
     conversationId: conversationIdRef.current, expanded: false, turns: [],
   });
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [submittedFileIds, setSubmittedFileIds] = useState<string[]>([]);
+  const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const attachmentsBusyRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [captureState, setCaptureState] = useState<CaptureState>("waiting");
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [image, setImage] = useState<ImageCaptureEvent | null>(null);
@@ -265,6 +271,16 @@ function App() {
   const isGenerating = isTurnActive(currentTurn);
   const updates = useUpdates(settings?.config.automaticUpdates ?? false);
   const hasSubmittedPrompt = conversation.turns.length > 0;
+  const attachmentControls = useFileAttachments({
+    inputRef: fileInputRef, conversationId: conversation.conversationId, files: attachedFiles, hiddenPreviewIds: submittedFileIds,
+    disabled: attachmentsBusy || isGenerating || ocrState === "reading" || updates.phase === "installing",
+    onChange: (files) => { if (conversationIdRef.current === conversation.conversationId) setAttachedFiles(files); },
+    onBusy: (busy) => { if (conversationIdRef.current === conversation.conversationId) { attachmentsBusyRef.current = busy; setAttachmentsBusy(busy); } },
+    onLayoutChange: () => setSourcesLayoutRevision((revision) => revision + 1),
+  });
+  const fileAttachButton = <AttachFilesButton
+    disabled={attachmentsBusy || isGenerating || ocrState === "reading" || updates.phase === "installing" || attachedFiles.length >= 5}
+    busy={attachmentsBusy} onClick={() => fileInputRef.current?.click()} />;
   useLayoutEffect(() => {
     const input = initialInputRef.current;
     if (!input) return;
@@ -287,6 +303,10 @@ function App() {
         setCaptureState("error");
       }
     });
+    setAttachedFiles([]);
+    setSubmittedFileIds([]);
+    setAttachmentsBusy(false);
+    attachmentsBusyRef.current = false;
     lastIntentRef.current = null;
     pendingOcrIntentRef.current = null;
     ocrImageIdRef.current = null;
@@ -324,9 +344,10 @@ function App() {
     kind: "initial" | "follow-up", prompt: string, request: Record<string, unknown>,
     retry = false, reference?: string,
   ) => {
-    if (activeTurnRef.current || updateController.getSnapshot().phase === "installing" || !prompt.trim()) return;
+    if (attachmentsBusyRef.current || activeTurnRef.current || updateController.getSnapshot().phase === "installing" || !prompt.trim()) return;
     const identity = { conversationId: conversationIdRef.current, turnId: ++nextTurnIdRef.current };
     activeTurnRef.current = identity;
+    setSubmittedFileIds(attachedFiles.map((file) => file.fileId));
     dispatchConversation({ type: "submit", identity, prompt: prompt.trim(), reference, kind, retry });
     try {
       const pending = invoke<GenerationStarted>(kind === "initial" ? "generate_for_selection" : "continue_conversation", {
@@ -625,6 +646,9 @@ function App() {
   }, [
     popupOpenSequence,
     sourcesLayoutRevision,
+    attachedFiles,
+    submittedFileIds,
+    attachmentsBusy,
     initialInputHeight,
     conversation,
     captureState,
@@ -695,7 +719,7 @@ function App() {
       selectedText: activeSelection?.text ?? null,
       imageId: activeImage?.imageId ?? null,
       intent,
-    }, Boolean(currentTurn), activeImage ? "Screenshot attached" : activeSelection ? "Reference text attached" : undefined);
+    }, Boolean(currentTurn), [activeImage ? "Screenshot attached" : activeSelection ? "Reference text attached" : "", ...attachedFiles.map((file) => file.name)].filter(Boolean).join(" · ") || undefined);
   };
 
   startGenerationRef.current = startGeneration;
@@ -930,18 +954,19 @@ function App() {
             )}
             {!isSettingsOpen && !hasSubmittedPrompt && (
               <form
-                className={`min-w-0 flex-1 ${captureNotice?.retryId != null ? "pr-9" : ""}`}
+                className={`flex min-w-0 flex-1 items-center gap-1 ${captureNotice?.retryId != null ? "pr-9" : ""}`}
                 onMouseDown={(event) => event.stopPropagation()}
                 onSubmit={(event) => {
                   event.preventDefault();
                   void startGeneration();
                 }}
               >
+                {fileAttachButton}
                 <textarea
                   ref={initialInputRef}
                   aria-label="Ask about the selection"
                   title="Enter to send; Shift+Enter for a new line"
-                  className="initial-prompt block max-h-32 w-full resize-none overflow-x-hidden overflow-y-auto bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
+                  className="initial-prompt block max-h-32 min-w-0 flex-1 resize-none overflow-x-hidden overflow-y-auto bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
                   placeholder={selection || image ? "Ask about this…" : "Ask me anything"}
                   rows={1}
                   value={customInstruction}
@@ -1044,6 +1069,9 @@ function App() {
               </svg>
             </button>
           </header>
+
+          {attachmentControls.picker}
+          {!isSettingsOpen && !hasSubmittedPrompt && attachmentControls.list}
 
           {!isSettingsOpen && !hasSubmittedPrompt && (
             <div>
@@ -1503,6 +1531,9 @@ function App() {
             <ConversationPanel
               onLayoutChange={() => setSourcesLayoutRevision((revision) => revision + 1)}
               conversation={conversation}
+              submissionBlocked={attachmentsBusy}
+              composerAction={fileAttachButton}
+              composerAttachments={attachmentControls.list}
               replacementId={selection?.editability === "editable" && !selection.truncated ? selection.replacementId : null}
               onReplacementUsed={(id) => setSelection((current) => current?.replacementId === id ? { ...current, replacementId: null } : current)}
               onContinue={() => dispatchConversation({ type: "expand" })}

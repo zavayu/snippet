@@ -152,6 +152,9 @@ async fn run_case(
                         .await
                         .map(snippet_lib::agent::ToolOutput::Webpage)
                 }
+                snippet_lib::agent::ToolRequest::ReadAttachedFile { .. } => {
+                    unreachable!("No files are attached in this evaluation")
+                }
             }
         },
         |_, _, _| {},

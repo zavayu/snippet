@@ -18,6 +18,8 @@ use super::{
 use crate::prompt::ChatMessage;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+// Bound malformed responses independently of the agent's per-tool budgets.
+const MAX_TOOL_CALLS_PER_RESPONSE: usize = 16;
 
 fn model_name(name: &str) -> String {
     if name.rsplit('/').next().unwrap_or(name).contains(':') {
@@ -383,7 +385,7 @@ impl LlmProvider for OllamaProvider {
                     }
                 }
                 answer.tool_calls.extend(message.tool_calls.clone());
-                if answer.tool_calls.len() > 3 {
+                if answer.tool_calls.len() > MAX_TOOL_CALLS_PER_RESPONSE {
                     return Err(ProviderError::RequestFailed(
                         "The model requested too many tools in one step.".into(),
                     ));
