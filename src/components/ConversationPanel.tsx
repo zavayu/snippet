@@ -79,6 +79,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
     <path d="M4 7h12m-3-3 3 3-3 3M20 17H8m3-3-3 3 3 3" />
   </ResponseAction>;
 
+  const panel = useRef<HTMLElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
@@ -101,8 +102,16 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
   useLayoutEffect(() => {
     const textarea = input.current;
     if (!textarea) return;
+    textarea.style.overflowY = "hidden";
     textarea.style.height = "0px";
-    textarea.style.height = `${Math.max(32, Math.min(textarea.scrollHeight, 128))}px`;
+    const height = Math.max(32, Math.min(textarea.scrollHeight, 128));
+    textarea.style.height = `${height}px`;
+    textarea.style.overflowY = textarea.scrollHeight > height ? "auto" : "hidden";
+    // Trade transcript space for composer space without moving its bottom edge.
+    panel.current?.style.setProperty("--composer-growth", `${height - 32}px`);
+    if (transcript.current && followBottom.current) {
+      transcript.current.scrollTop = transcript.current.scrollHeight;
+    }
     onLayoutChange?.();
   }, [draft, conversation.expanded]);
 
@@ -113,7 +122,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
     followBottom.current = true;
   };
 
-  return <section className="mb-2" aria-label="Conversation">
+  return <section ref={panel} className="mb-2" aria-label="Conversation">
     <div ref={transcript} role="log" aria-label="Conversation messages" aria-busy={busy}
       className={`response-scroll conversation-transcript overflow-y-auto text-sm leading-5 text-zinc-200 ${conversation.expanded ? "conversation-transcript--expanded" : ""}`}
       onScroll={(event) => {
@@ -170,12 +179,11 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
     {replaceError && <p role="alert" className="mt-2 text-xs text-amber-200">{replaceError}</p>}
 
     {composerAttachments}
-    {conversation.expanded && <form className="mt-2 flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950/50 p-2"
+    {conversation.expanded && <form className="mt-2 flex items-end gap-2 rounded-xl border border-zinc-700 bg-zinc-950/50 p-2"
       onSubmit={(event) => { event.preventDefault(); submit(); }}>
-      {composerAction}
+      {composerAction && <div className="shrink-0 self-end">{composerAction}</div>}
       <textarea ref={input} aria-label="Follow-up question" placeholder="Ask a follow-up…" rows={1}
-        title="Enter to send; Shift+Enter for a new line"
-        className="block h-8 min-h-8 max-h-32 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-500 disabled:opacity-50"
+        className="composer-scroll block h-8 min-h-8 max-h-32 min-w-0 flex-1 resize-none overflow-x-hidden overflow-y-auto bg-transparent px-1 py-1 text-sm leading-6 text-zinc-100 outline-none placeholder:text-zinc-500 disabled:opacity-50"
         value={draft} disabled={!hasCompletedTurn}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => handlePromptKeyDown(event, submit)} />

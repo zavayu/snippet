@@ -961,11 +961,10 @@ function App() {
                   void startGeneration();
                 }}
               >
-                {fileAttachButton}
+                <div className="self-start pt-1">{fileAttachButton}</div>
                 <textarea
                   ref={initialInputRef}
                   aria-label="Ask about the selection"
-                  title="Enter to send; Shift+Enter for a new line"
                   className="initial-prompt block max-h-32 min-w-0 flex-1 resize-none overflow-x-hidden overflow-y-auto bg-transparent px-1 py-2 text-[17px] text-zinc-100 outline-none placeholder:text-zinc-500"
                   placeholder={selection || image ? "Ask about this…" : "Ask me anything"}
                   rows={1}
@@ -1165,11 +1164,10 @@ function App() {
                 )}
                 {selection && (settings?.config.webSearchEnabled ?? true) && <button
                   type="button"
-                  title="Search the web and summarize with Ollama."
                   className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-sm font-normal text-zinc-300 transition-colors hover:bg-zinc-600 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
                   onClick={() => void startGeneration({ kind: "research", instruction: customInstruction.trim() })}
                 >Research</button>}
-                {(selection || image || ocrState === "reading") && QUICK_ACTIONS.map((action) => (
+                {(selection || image || ocrState === "reading") && QUICK_ACTIONS.filter((action) => action !== "refine" || selection?.editability === "editable").map((action) => (
                   <button
                     key={action}
                     type="button"

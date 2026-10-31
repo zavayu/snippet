@@ -99,9 +99,9 @@ export function FileAttachments(props: Props) {
 
 export function AttachFilesButton({ disabled, busy, onClick }: { disabled: boolean; busy: boolean; onClick: () => void }) {
   return <button type="button" aria-label="Attach files"
-    title={busy ? "Updating files..." : "Attach text, Markdown, or source files (up to 512 KB each)"}
+    title={busy ? "Updating files..." : "Add files"}
     disabled={disabled} onClick={onClick}
-    className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-violet-400 disabled:cursor-not-allowed disabled:opacity-40">
+    className="grid size-8 shrink-0 self-start cursor-pointer place-items-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-violet-400 disabled:cursor-not-allowed disabled:opacity-40">
     <svg aria-hidden="true" viewBox="0 0 24 24" className={`size-4.5 fill-none stroke-current stroke-[1.8] ${busy ? "animate-spin" : ""}`} strokeLinecap="round">
       {busy ? <path d="M20 12a8 8 0 1 0-8 8" /> : <path d="M12 5v14M5 12h14" />}
     </svg>

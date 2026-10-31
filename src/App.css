@@ -59,26 +59,42 @@ body {
   }
 }
 
-.preview-scroll {
+.preview-scroll,
+.composer-scroll {
   scrollbar-color: rgb(113 113 122 / 55%) transparent;
   scrollbar-width: thin;
 }
 
-.preview-scroll::-webkit-scrollbar {
+.preview-scroll::-webkit-scrollbar,
+.composer-scroll::-webkit-scrollbar {
   width: 6px;
 }
 
-.preview-scroll::-webkit-scrollbar-track {
+.preview-scroll::-webkit-scrollbar-track,
+.composer-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.preview-scroll::-webkit-scrollbar-thumb {
+.preview-scroll::-webkit-scrollbar-thumb,
+.composer-scroll::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgb(113 113 122 / 45%);
 }
 
-.preview-scroll::-webkit-scrollbar-thumb:hover {
+.preview-scroll::-webkit-scrollbar-thumb:hover,
+.composer-scroll::-webkit-scrollbar-thumb:hover {
   background: rgb(161 161 170 / 65%);
+}
+
+.composer-scroll {
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.composer-scroll::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .settings-scroll {
@@ -114,7 +130,8 @@ body {
 }
 
 .conversation-transcript--expanded {
-  height: min(28rem, max(0px, calc(var(--popup-max-height, 900px) - 290px)));
+  --transcript-height: min(28rem, max(0px, calc(var(--popup-max-height, 900px) - 290px)));
+  height: max(0px, calc(var(--transcript-height) - var(--composer-growth, 0px)));
   max-height: none;
 }
 
