@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
 ### Added
 
@@ -10,6 +10,11 @@
 - Offline LaTeX math rendering in responses with inline `$...$` and display `$$`
   equations, horizontal scrolling for wide equations, and preserved LaTeX source
   when copying or replacing text.
+
+### Improved
+
+- Guide assistant responses and Ollama OCR to format mathematical notation as
+  LaTeX and escape dollar signs in prices.
 
 ### Fixed
 
