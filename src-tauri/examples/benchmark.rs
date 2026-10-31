@@ -140,7 +140,20 @@ async fn run_case(
         Vec::new(),
         cancellation.clone(),
         sender,
-        |query| async move { research::search_traced(&query, None, cancellation, trace).await },
+        |action| async move {
+            match action {
+                snippet_lib::agent::ToolRequest::Search(query) => {
+                    research::search_traced(&query, None, cancellation, trace)
+                        .await
+                        .map(snippet_lib::agent::ToolOutput::Search)
+                }
+                snippet_lib::agent::ToolRequest::ReadWebpage(url) => {
+                    snippet_lib::webpage::read(&url, cancellation)
+                        .await
+                        .map(snippet_lib::agent::ToolOutput::Webpage)
+                }
+            }
+        },
         |_, _, _| {},
     );
     let consume = async {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `read_webpage` for direct URL reading and inspecting search results, with
+  main-content Markdown extraction, citations, and a "Reading webpage" status.
+- Bound page downloads, redirects, extracted content, and tool calls; report
+  partial results and unsupported pages, and block local/private-network targets.
+
 - Replace separate web-search planning with native Ollama tool calls and a bounded
   search loop, retaining citations and successful tool history for follow-ups.
 - Check installed-model tool support; keep ordinary chat available with a notice

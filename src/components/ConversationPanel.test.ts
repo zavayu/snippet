@@ -42,6 +42,7 @@ describe("conversation interface", () => {
   it.each([
     ["planning", "Preparing search..."],
     ["searching", "Searching..."],
+    ["reading", "Reading webpage..."],
     ["summarizing", "Summarizing..."],
     ["answering", "Thinking..."],
   ] as const)("shows pending status during %s with retained sources", (phase, label) => {

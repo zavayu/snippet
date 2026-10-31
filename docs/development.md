@@ -36,6 +36,7 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 | `src-tauri/src/selection.rs` and `selection/` | Accessibility capture, copy fallback, editability checks, and replacement |
 | `src-tauri/src/screen.rs` | In-memory monitor capture, region cropping, and image encoding |
 | `src-tauri/src/agent.rs` | Bounded tool loop, capability checks, tool validation, and dispatch |
+| `src-tauri/src/webpage.rs` | Public HTML retrieval, redirect/DNS validation, and main-content extraction |
 | `src-tauri/src/research.rs` | You.com retrieval, source normalization, and research grounding |
 | `src-tauri/src/search_credentials.rs` | Windows Credential Manager API key storage |
 | `src-tauri/src/ocr.rs` | Native Windows OCR |
@@ -53,24 +54,43 @@ edge. Region capture crops before resizing.
 
 ## Web tool execution
 
-Normal prompts and follow-ups expose `web_search` only when web search is enabled
+Normal prompts and follow-ups expose `web_search` and `read_webpage` when web access is enabled
 and `/api/show` confirms the installed model has the `tools` capability. Missing
 capability metadata is treated as unknown. Unsupported models retain ordinary
 chat and show a notice; explicit Research fails clearly instead of answering
 without research. Quick actions omit tools.
 
 The provider streams assistant text and collects native tool calls and reasoning.
-The loop validates names and query arguments before dispatching to You.com, then
+The loop validates names and arguments before dispatching to You.com or the
+webpage reader, then
 returns results as `tool` messages with stable source IDs. The Research action
 instructs the first model step to request a search; an answer without a search is
 rejected. There is no separate search-decision or query-planning model request.
 
-A turn permits three searches and at most four model steps. Repeated queries,
+A turn permits three searches, three page reads, and at most seven model steps. Repeated requests,
 unknown tools, invalid arguments, oversized context, and search failures stop the
 turn. The app applies a five-minute deadline and cancellation across the loop.
 Tool-step preambles are cleared from the response view; final text still streams.
 Only successful turns commit tool history and sources. If the user switches to a
 model without tools, earlier evidence is retained as marked reference text.
+
+The page reader downloads at most 2 MB within a 35-second deadline, follows at
+most four validated redirects, and returns at most 6,000 UTF-8 bytes of extracted
+Markdown (less when conversation space is limited). Truncation and retrieval time
+are explicit in the tool result. Citation IDs are reused for pages already found
+by search. Read errors become tool results without creating a source; cancellation
+still aborts the turn.
+
+`dom_query` parses HTML and converts the selected main region to Markdown. The
+extractor removes common boilerplate and hidden elements, prefers semantic
+article/main regions, and otherwise scores text-rich containers against link
+content. Relative links resolve against the final URL. It is heuristic and does
+not run JavaScript, compute CSS, load subresources, or use browser authentication.
+Non-HTML, non-UTF-8, login/challenge pages, and empty shells return clear errors.
+
+Every target and redirect must use HTTP/HTTPS on standard web ports with no URL
+credentials. DNS answers must all be public and are pinned for the request;
+automatic redirects and proxies are disabled to prevent private-network access.
 
 ## Local configuration
 

@@ -37,6 +37,7 @@ local prompts share the same instruction; the automatic path exposes the search 
 One JSON object is written per request, with a monotonic timeline in milliseconds:
 
 - `prompt_preparation`: benchmark prompt construction.
+- `read_webpage`: public HTML download and extraction when a result is read.
 - `web_search`: total retrieval; nested spans separate free MCP initialization,
   the initialized notification, search execution, and source parsing.
 - `answer_request`, `answer_headers`, `answer_first_chunk`, and

@@ -306,7 +306,9 @@ mod tests {
         assert!(messages[1].content.contains("answer yes"));
         super::set_web_search_context(&mut messages, false);
         assert_eq!(messages.len(), 3);
-        assert!(messages[1].content.contains("Web search is disabled"));
+        assert!(messages[1]
+            .content
+            .contains("Web search and webpage reading are disabled"));
         assert!(!messages[1].content.contains("Web search is enabled"));
         assert!(messages[0].content.ends_with("Existing citation rules."));
         assert!(messages[2].content.contains("Can you search the web?"));

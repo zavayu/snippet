@@ -9,6 +9,7 @@ mod search_credentials;
 mod selection;
 mod settings;
 pub mod timing;
+pub mod webpage;
 
 use std::{
     io,
@@ -922,13 +923,27 @@ fn stream_conversation(
                     previous_sources,
                     cancellation.clone(),
                     event_sender,
-                    |query| {
+                    |action| {
                         let token = search_token.clone();
                         let trace = provider_trace.clone();
                         async move {
-                            let key =
-                                search_credentials::read().map_err(ProviderError::RequestFailed)?;
-                            research::search_traced(&query, key.as_deref(), &token, &trace).await
+                            match action {
+                                agent::ToolRequest::Search(query) => {
+                                    let key = search_credentials::read()
+                                        .map_err(ProviderError::RequestFailed)?;
+                                    research::search_traced(&query, key.as_deref(), &token, &trace)
+                                        .await
+                                        .map(agent::ToolOutput::Search)
+                                }
+                                agent::ToolRequest::ReadWebpage(url) => {
+                                    let span = trace.span("read_webpage");
+                                    let result = webpage::read(&url, &token).await;
+                                    if result.is_ok() {
+                                        span.finish();
+                                    }
+                                    result.map(agent::ToolOutput::Webpage)
+                                }
+                            }
                         }
                     },
                     progress,

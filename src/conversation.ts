@@ -81,6 +81,7 @@ export function generationLabel(turn?: ChatTurn): string {
   switch (turn?.research?.phase) {
     case "planning": return "Preparing search...";
     case "searching": return "Searching...";
+    case "reading": return "Reading webpage...";
     case "summarizing": return "Summarizing...";
     default: return "Thinking...";
   }

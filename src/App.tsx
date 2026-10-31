@@ -1271,7 +1271,7 @@ function App() {
                     checked={settingsDraft?.webSearchEnabled ?? true}
                     onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, webSearchEnabled: event.target.checked }))} />
                 </label>
-                <p className="mt-2 text-xs leading-5 text-zinc-400">Ollama can search the web when helpful.</p>
+                <p className="mt-2 text-xs leading-5 text-zinc-400">Allows search and reading public webpages when helpful.</p>
                 <label className="mt-4 block text-xs font-medium text-zinc-400">You.com API key (optional)
                   <input type="password" autoComplete="off" aria-label="You.com API key"
                     className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"

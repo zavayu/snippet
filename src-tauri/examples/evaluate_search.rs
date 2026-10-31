@@ -72,19 +72,26 @@ async fn decision(
         Vec::new(),
         CancellationToken::new(),
         sender,
-        |query| {
-            queries.lock().unwrap().push(query);
-            async {
-                Ok(vec![research::Source {
-                    id: 1,
-                    title: "Synthetic evaluation evidence".into(),
-                    url: "https://example.com/".into(),
-                    excerpt:
-                        "Synthetic evidence only. Current facts cannot be established by this test."
-                            .into(),
-                    published_at: None,
-                }])
-            }
+        |action| {
+            let result = match action {
+                snippet_lib::agent::ToolRequest::Search(query) => {
+                    queries.lock().unwrap().push(query);
+                    snippet_lib::agent::ToolOutput::Search(vec![research::Source {
+                        id: 1, title: "Synthetic evaluation evidence".into(),
+                        url: "https://example.com/".into(),
+                        excerpt: "Synthetic evidence only. Current facts cannot be established by this test.".into(),
+                        published_at: None,
+                    }])
+                }
+                snippet_lib::agent::ToolRequest::ReadWebpage(url) => {
+                    snippet_lib::agent::ToolOutput::Webpage(snippet_lib::webpage::Webpage {
+                        requested_url: url.clone(), final_url: url, title: "Synthetic evaluation page".into(),
+                        content: "Synthetic evidence only. Current facts cannot be established by this test.".into(),
+                        retrieved_at_utc: chrono::Utc::now().to_rfc3339(), truncated: false,
+                    })
+                }
+            };
+            async move { Ok(result) }
         },
         |_, _, _| {},
     )
