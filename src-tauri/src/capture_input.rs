@@ -64,7 +64,7 @@ pub async fn prepare(
                     if message == "The selected Ollama model is not installed." =>
                 {
                     ProviderError::RequestFailed(format!(
-                        "The OCR model '{}' is not installed. Choose an installed model in Settings > Screen capture > Advanced text extraction.",
+                        "The OCR model '{}' is not installed. Choose an installed model in Settings > Context > Screen capture > Advanced text extraction.",
                         config.ocr_model,
                     ))
                 }

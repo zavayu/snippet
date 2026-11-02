@@ -50,7 +50,10 @@ export function AttachmentPicker({ conversationId, filesDisabled, onFile, onCapt
     };
   }, []);
   useEffect(() => {
-    if (page === "menu") root.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    const target = page === "menu"
+      ? root.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")
+      : root.current?.querySelector<HTMLInputElement>("input");
+    target?.focus({ preventScroll: true });
   }, [page]);
   useEffect(onLayoutChange, [page, windows, loading, capturing, error, query]);
 
@@ -105,13 +108,12 @@ export function AttachmentPicker({ conversationId, filesDisabled, onFile, onCapt
         </button>
       </div>
       <div className="mb-2 flex gap-2">
-        <input autoFocus aria-label="Search windows" placeholder="Search windows…" value={query} disabled={capturing}
+        <input aria-label="Search windows" placeholder="Search windows…" value={query} disabled={capturing}
           onChange={(event) => setQuery(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-zinc-600" />
         <button type="button" aria-label="Refresh windows" title="Refresh windows" className="grid size-8 cursor-pointer place-items-center rounded-lg text-zinc-400 hover:bg-zinc-700 disabled:opacity-40" disabled={loading || capturing} onClick={() => void refresh()}>
           <svg aria-hidden="true" viewBox="0 0 24 24" className={`${icon} ${loading ? "animate-spin" : ""}`} strokeLinecap="round" strokeLinejoin="round"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" /></svg>
         </button>
       </div>
-      <p className="mb-2 px-1 text-[11px] text-zinc-500">Minimized windows briefly open for capture.</p>
       <div className="preview-scroll max-h-48 overflow-y-auto" aria-label="Open windows" aria-busy={loading || capturing}>
         {loading ? <p className="p-2 text-xs text-zinc-500">Finding windows…</p> : filtered.map((window) =>
           <button type="button" key={`${window.id}-${window.pid}`} className={`${button} flex items-center gap-2`} disabled={capturing} onClick={() => void capture(window)}>

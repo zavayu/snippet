@@ -698,7 +698,7 @@ fn generate_for_selection(
     let research = if let crate::prompt::PromptIntent::Research { instruction } = &request.intent {
         if !snapshot.config.web_search_enabled {
             return Err(
-                "Web search is disabled. Enable it in Settings > Web search to use Research."
+                "Web search is disabled. Enable it in Settings > Context > Web search to use Research."
                     .into(),
             );
         }

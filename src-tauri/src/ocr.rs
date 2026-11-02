@@ -11,7 +11,7 @@ pub fn recognize(image: &DynamicImage) -> Result<String, ProviderError> {
     {
         let _ = image;
         Err(ProviderError::RequestFailed(
-            "Windows OCR is available on Windows only. Choose Ollama in Settings → Screen capture > Advanced text extraction."
+            "Windows OCR is available on Windows only. Choose Ollama in Settings → Context > Screen capture > Advanced text extraction."
                 .into(),
         ))
     }
@@ -40,7 +40,7 @@ mod native {
         let engine = OcrEngine::TryCreateFromUserProfileLanguages().or_else(|_| {
             let languages = OcrEngine::AvailableRecognizerLanguages()?;
             OcrEngine::TryCreateFromLanguage(&languages.GetAt(0)?)
-        }).map_err(|_| "Windows OCR has no recognizer for your preferred languages. Install an OCR language pack in Windows Settings → Time & language → Language & region, or choose Ollama in Snippet Settings → Screen capture > Advanced text extraction.".to_string())?;
+        }).map_err(|_| "Windows OCR has no recognizer for your preferred languages. Install an OCR language pack in Windows Settings → Time & language → Language & region, or choose Ollama in Snippet Settings → Context > Screen capture > Advanced text extraction.".to_string())?;
         let limit = OcrEngine::MaxImageDimension().map_err(failure)?;
         let image = prepare(image, limit);
         let mut pixels = image.to_rgba8();
@@ -73,7 +73,7 @@ mod native {
     }
 
     fn failure(error: windows::core::Error) -> String {
-        format!("Windows OCR could not read this capture: {error}. Try again or choose Ollama in Settings → Screen capture > Advanced text extraction.")
+        format!("Windows OCR could not read this capture: {error}. Try again or choose Ollama in Settings → Context > Screen capture > Advanced text extraction.")
     }
 
     fn prepare(image: &DynamicImage, limit: u32) -> DynamicImage {

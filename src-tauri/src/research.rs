@@ -68,16 +68,16 @@ fn transport_error(_: reqwest::Error) -> ProviderError {
 fn status_error(status: StatusCode) -> Result<(), ProviderError> {
     match status.as_u16() {
         200..=299 => Ok(()),
-        401 | 403 => Err(failed("You.com rejected this search. Check your optional API key in Settings > Web search, or remove it to use free search.")),
+        401 | 403 => Err(failed("You.com rejected this search. Check your optional API key in Settings > Context > Web search, or remove it to use free search.")),
         402 => Err(failed("You.com search credits are exhausted. Add credits to your account or remove the API key to use free search.")),
-        429 => Err(failed("You.com's search limit was reached. Try later or configure your own API key in Settings > Web search.")),
+        429 => Err(failed("You.com's search limit was reached. Try later or configure your own API key in Settings > Context > Web search.")),
         _ => Err(failed("You.com search is temporarily unavailable. Please retry later.")),
     }
 }
 
 fn free_status(status: StatusCode) -> Result<(), ProviderError> {
     if matches!(status.as_u16(), 401 | 403) {
-        Err(failed("You.com denied free search access from this app or network. Free search may be unavailable here; you can configure your own API key in Settings > Web search."))
+        Err(failed("You.com denied free search access from this app or network. Free search may be unavailable here; you can configure your own API key in Settings > Context > Web search."))
     } else {
         status_error(status)
     }
@@ -231,9 +231,9 @@ async fn fetch_traced(
             let text = result.to_string().to_lowercase();
             return Err(
                 if text.contains("limit") || text.contains("quota") || text.contains("429") {
-                    failed("You.com's free search limit was reached. Try later or add an API key in Settings > Web search.")
+                    failed("You.com's free search limit was reached. Try later or add an API key in Settings > Context > Web search.")
                 } else {
-                    failed("You.com could not complete this search. Retry later or configure an API key in Settings > Web search.")
+                    failed("You.com could not complete this search. Retry later or configure an API key in Settings > Context > Web search.")
                 },
             );
         }
@@ -319,9 +319,9 @@ fn rpc_result(value: &Value) -> Result<&Value, ProviderError> {
     value.get("result").ok_or_else(|| {
         let error = value.get("error").map(Value::to_string).unwrap_or_default().to_lowercase();
         if error.contains("limit") || error.contains("quota") || error.contains("429") {
-            failed("You.com's search limit was reached. Try later or configure an API key in Settings > Web search.")
+            failed("You.com's search limit was reached. Try later or configure an API key in Settings > Context > Web search.")
         } else {
-            failed("You.com rejected the search request. Retry later or configure an API key in Settings > Web search.")
+            failed("You.com rejected the search request. Retry later or configure an API key in Settings > Context > Web search.")
         }
     })
 }

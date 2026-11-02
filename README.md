@@ -80,7 +80,7 @@ Snippet checks the installed chat model's capabilities when you send:
 
 - **Vision models** receive the image directly.
 - **Text-only models** receive extracted text using Windows OCR by default.
-- Enable **Settings > Screen capture > Assist image reading with OCR** to send
+- Enable **Settings > Context > Screen capture > Assist image reading with OCR** to send
   extracted text alongside images for vision models that struggle with text.
 
 OCR runs only when needed, as part of your request. Follow-up questions retain
@@ -130,7 +130,7 @@ existing source IDs. Each turn allows up to three searches and three page reads,
 rejects repeated tool requests, and has a five-minute deadline. Stop cancels the request; failed or
 stopped turns do not enter conversation history.
 
-Web search is **enabled by default**. Disable it in **Settings > Web search** and
+Web search is **enabled by default**. Disable it in **Settings > Context > Web search** and
 save your settings to hide Research and block both searching and webpage reading.
 You can also capture a region and ask Snippet to research what it contains.
 
@@ -238,7 +238,7 @@ and attached files are held in memory, while preferences are saved locally.
 
 Snippet checks GitHub Releases for updates automatically once a day unless you
 disable automatic checks. You can also check through the tray menu or
-**Settings > Updates**. Update checks do not send your selected text or screenshots
+**Settings > General > Updates**. Update checks do not send your selected text or screenshots
 to GitHub.
 
 Download and installation require a click. In-app updates verify the download's

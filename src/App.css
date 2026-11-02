@@ -7,7 +7,7 @@
   background: transparent;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  overflow: hidden;
+  overflow: clip;
 }
 
 body {
@@ -15,12 +15,12 @@ body {
   margin: 0;
   min-width: 320px;
   background: transparent;
-  overflow: hidden;
+  overflow: clip;
 }
 
 #root {
   height: 100%;
-  overflow: hidden;
+  overflow: clip;
 }
 
 .popup-surface {
@@ -124,9 +124,239 @@ body {
   height: 0;
 }
 
+.settings-panel {
+  flex: 1 1 auto;
+}
+
+.settings-section-title {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: #e4e4e7;
+}
+
+.settings-label {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: #e4e4e7;
+}
+
+.settings-help {
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 400;
+  color: #a1a1aa;
+}
+
+.settings-panel select,
+.settings-panel input:not([type="checkbox"]):not([type="range"]) {
+  font-size: 13px;
+  line-height: 20px;
+}
+
 .settings-scroll {
+  flex: 1 1 auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   scrollbar-color: rgb(113 113 122 / 55%) transparent;
   scrollbar-width: thin;
+}
+
+.settings-group + .settings-group {
+  margin-top: 18px;
+}
+
+.settings-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.settings-card {
+  border: 1px solid #303034;
+  border-radius: 12px;
+  background: #1e1e21;
+}
+
+.settings-card > * + *,
+.settings-disclosure > .settings-row + .settings-row {
+  border-top: 1px solid #303034;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 48px;
+  padding: 11px 12px;
+}
+
+.settings-row-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-row-control {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 46%;
+}
+
+.settings-control {
+  width: 164px;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: #27272a;
+  color: #e4e4e7;
+  font-size: 13px;
+  line-height: 20px;
+  outline: none;
+}
+
+.settings-control:focus-visible,
+.settings-switch:focus-visible,
+.settings-clear:focus-visible {
+  outline: 2px solid #a78bfa;
+  outline-offset: 2px;
+}
+
+.settings-control-wide {
+  width: 100%;
+}
+
+.settings-switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #52525b;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.settings-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #f4f4f5;
+  transition: transform 120ms ease;
+}
+
+.settings-switch[aria-checked="true"] {
+  background: #f4f4f5;
+}
+
+.settings-switch[aria-checked="true"] .settings-switch-thumb {
+  transform: translateX(14px);
+  background: #27272a;
+}
+
+.settings-switch:disabled,
+.settings-text-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.settings-text-button {
+  font-size: 12px;
+  color: #a1a1aa;
+  cursor: pointer;
+}
+
+.settings-text-button:hover:not(:disabled) {
+  color: #f4f4f5;
+}
+
+.settings-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.settings-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-disclosure > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 3px;
+  border-right: 1.5px solid #a1a1aa;
+  border-bottom: 1.5px solid #a1a1aa;
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+.settings-disclosure[open] > summary::after {
+  transform: rotate(225deg);
+}
+
+.settings-details-body {
+  padding: 0 12px 12px;
+}
+
+.settings-details-body .settings-row {
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.settings-range {
+  width: 164px;
+  text-align: right;
+}
+
+.settings-range > input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  accent-color: #a78bfa;
+}
+
+.settings-shortcut {
+  width: 130px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-shortcut-recording {
+  border-color: #a78bfa;
+  color: #ddd6fe;
+}
+
+.settings-clear {
+  display: grid;
+  width: 24px;
+  height: 28px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 6px;
+  color: #71717a;
+  cursor: pointer;
+}
+
+.settings-clear:hover {
+  color: #e4e4e7;
+  background: #303034;
 }
 
 .settings-scroll::-webkit-scrollbar {

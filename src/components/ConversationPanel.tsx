@@ -90,7 +90,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
   const hasCompletedTurn = conversation.turns.some((turn) => turn.status === "complete");
 
   useEffect(() => {
-    if (conversation.expanded && !busy) input.current?.focus();
+    if (conversation.expanded && !busy) input.current?.focus({ preventScroll: true });
   }, [conversation.expanded, busy]);
 
   useLayoutEffect(() => {

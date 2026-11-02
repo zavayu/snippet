@@ -16,6 +16,7 @@ import "./App.css";
 import { SHOW_DEVELOPMENT_TOOLS } from "./config";
 import { RequestInspector } from "./components/RequestInspector";
 import { UpdatesPanel } from "./components/UpdatesPanel";
+import { SettingsGroup, SettingsRow, SettingsToggle } from "./components/SettingsRows";
 import { updateController, useUpdates } from "./useUpdates";
 import { conversationReducer, generationLabel, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
 import { AttachmentPicker, ImageAttachmentPreview, type CapturedContextImage } from "./components/AttachmentPicker";
@@ -27,6 +28,7 @@ import { popupPosition, type SelectionBounds } from "./popupPosition";
 const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
 const POPUP_MAX_HEIGHT = 900;
+const SETTINGS_MAX_HEIGHT = 680;
 const POPUP_SHADOW_MARGIN = 24;
 
 type CaptureState = "waiting" | "captured" | "error";
@@ -130,7 +132,7 @@ type GenerationFailure = GenerationEvent & {
   message: string;
 };
 
-type SettingsPage = "general" | "ocr" | "search" | "shortcuts" | "updates";
+type SettingsPage = "general" | "context" | "shortcuts";
 type ShortcutKey = keyof ShortcutConfig;
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
@@ -228,6 +230,8 @@ function App() {
   const [isPopupSurfaceVisible, setIsPopupSurfaceVisible] = useState(false);
   const [popupOpenSequence, setPopupOpenSequence] = useState(0);
   const popupContentRef = useRef<HTMLDivElement>(null);
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
+  const updatesSettingsRef = useRef<HTMLDetailsElement>(null);
   const attachmentPopoverRef = useRef<HTMLDivElement>(null);
   const attachmentButtonRef = useRef<HTMLButtonElement>(null);
   const [sourcesLayoutRevision, setSourcesLayoutRevision] = useState(0);
@@ -441,7 +445,15 @@ function App() {
         requestPopupPosition();
         setIsPopupSurfaceVisible(true);
         setIsSettingsOpen(true);
-        setSettingsPage("updates");
+        setSettingsPage("general");
+        window.requestAnimationFrame(() => {
+          const section = updatesSettingsRef.current;
+          const scrollArea = settingsScrollRef.current;
+          if (section && scrollArea) {
+            section.open = true;
+            scrollArea.scrollTo({ top: scrollArea.scrollTop + section.getBoundingClientRect().top - scrollArea.getBoundingClientRect().top });
+          }
+        });
         void updateController.check();
       }),
       listen<SelectionCaptureEvent>("selection-captured", (event) => {
@@ -532,9 +544,10 @@ function App() {
         if (cancelled) {
           return;
         }
+        const heightLimit = isSettingsOpen ? SETTINGS_MAX_HEIGHT : POPUP_MAX_HEIGHT;
         const maxHeight = monitor
-          ? Math.min(POPUP_MAX_HEIGHT, Math.max(POPUP_MIN_HEIGHT, monitor.workArea.size.height / monitor.scaleFactor - 16))
-          : POPUP_MAX_HEIGHT;
+          ? Math.min(heightLimit, Math.max(POPUP_MIN_HEIGHT, monitor.workArea.size.height / monitor.scaleFactor - 16))
+          : heightLimit;
         popupContentRef.current?.style.setProperty("--popup-max-height", `${maxHeight}px`);
         const contentRect = popupContentRef.current?.getBoundingClientRect();
         const contentHeight = contentRect?.height ?? POPUP_MIN_HEIGHT;
@@ -567,7 +580,7 @@ function App() {
         if (popover) {
           const firstOpening = popover.style.visibility !== "visible";
           popover.style.visibility = "visible";
-          if (firstOpening) popover.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+          if (firstOpening) popover.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
         }
 
         const popupSize = await popupWindow.outerSize();
@@ -642,6 +655,10 @@ function App() {
     updates.notes,
     updates.error,
   ]);
+
+  useLayoutEffect(() => {
+    settingsScrollRef.current?.scrollTo({ top: 0 });
+  }, [settingsPage, isSettingsOpen]);
 
   const resolveIntent = (intentOverride?: PromptIntent): PromptIntent => {
     if (intentOverride) {
@@ -831,7 +848,7 @@ function App() {
     } finally {
       if (conversationIdRef.current === conversationId) {
         setIsRetryingCapture(false);
-        window.requestAnimationFrame(() => initialInputRef.current?.focus());
+        window.requestAnimationFrame(() => initialInputRef.current?.focus({ preventScroll: true }));
       }
     }
   };
@@ -848,7 +865,7 @@ function App() {
     resetConversation();
     setIsSettingsOpen(false);
     void invoke("discard_image_capture");
-    window.requestAnimationFrame(() => initialInputRef.current?.focus());
+    window.requestAnimationFrame(() => initialInputRef.current?.focus({ preventScroll: true }));
   };
 
   const configuredModelIsListed = settingsDraft?.model
@@ -858,7 +875,7 @@ function App() {
   const canFinishOnboarding = Boolean(settingsDraft?.model || settings?.effectiveModel);
 
   return (
-    <main className="min-h-screen overflow-hidden p-6 text-zinc-100">
+    <main className="min-h-screen overflow-clip p-6 text-zinc-100">
       <section className="mx-auto w-full max-w-xl">
         <div
           ref={popupContentRef}
@@ -1026,12 +1043,30 @@ function App() {
           )}
 
           {isSettingsOpen && (
-            <section className="settings-scroll min-h-0 overflow-y-auto px-1 pr-2 pt-1">
+            <section className="settings-panel flex min-h-0 flex-col">
+              <div className="mb-3 flex shrink-0 gap-1 rounded-lg bg-zinc-950/50 p-1">
+                {([
+                  ["general", "General"],
+                  ["context", "Context"],
+                  ["shortcuts", "Shortcuts"],
+                ] as const).map(([page, label]) => (
+                  <button
+                    key={page}
+                    type="button"
+                    className={`flex-1 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${settingsPage === page ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+                    onClick={() => setSettingsPage(page)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div ref={settingsScrollRef} className="settings-scroll min-h-0 overflow-y-auto px-1 pr-2">
               {isOnboardingOpen && (
                 <section className="mb-4 rounded-xl border border-violet-400/30 bg-violet-500/10 p-3">
                   <p className="text-sm font-semibold text-zinc-100">Welcome to Snippet</p>
                   <p className="mt-1 text-xs leading-5 text-zinc-400">
-                    Snippet runs locally through Ollama. Install Ollama, choose a model below, then finish setup.
+                    Choose a local Ollama model to get started.
                   </p>
                   <button
                     type="button"
@@ -1061,303 +1096,133 @@ function App() {
                   </button>
                 </section>
               )}
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-zinc-200">{settingsPage === "updates" ? "Updates" : settingsPage === "search" ? "Web search" : "Local AI"}</p>
-                {settingsPage !== "updates" && settingsPage !== "search" && <button
-                  type="button"
-                  className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-100"
-                  onClick={() => void refreshProviderStatus()}
-                >
-                  Refresh
-                </button>}
-              </div>
-
-              <div className="mb-4 flex gap-1 rounded-lg bg-zinc-950/50 p-1">
-                {([
-                  ["general", "General"],
-                  ["ocr", "Screen capture"],
-                  ["search", "Web search"],
-                  ["shortcuts", "Shortcuts"],
-                  ["updates", "Updates"],
-                ] as const).map(([page, label]) => (
-                  <button
-                    key={page}
-                    type="button"
-                    className={`flex-1 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${settingsPage === page ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                    onClick={() => setSettingsPage(page)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {settingsPage === "updates" && (
-                <UpdatesPanel update={updates}
-                  automatic={settingsDraft?.automaticUpdates ?? true}
-                  onAutomaticChange={(enabled) => setSettingsDraft((draft) => draft && ({ ...draft, automaticUpdates: enabled }))}
-                  busy={isGenerating} />
-              )}
-
-              {settingsPage === "general" && (
-                <>
-              <label className="mb-4 block text-xs font-medium text-zinc-400">
-                Ollama address
-                <input
-                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
-                  value={settingsDraft?.ollamaBaseUrl ?? ""}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    ollamaBaseUrl: event.target.value,
-                  }))}
-                />
-              </label>
-
-              <label className="block text-xs font-medium text-zinc-400">
-                Model
-                <select
-                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
-                  value={settingsDraft?.model ?? ""}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    model: event.target.value || null,
-                  }))}
-                >
-                  <option value="">Choose an installed model</option>
-                  {settingsDraft?.model && !configuredModelIsListed && (
-                    <option value={settingsDraft.model}>{settingsDraft.model} (not installed)</option>
-                  )}
-                  {availableModels.map((model) => (
-                    <option key={model.name} value={model.name}>{model.name}</option>
-                  ))}
-                </select>
-              </label>
-                </>
-              )}
-
-              {settingsPage === "search" && <>
-                <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
-                  <span className="text-sm text-zinc-200">Enable web search</span>
-                  <input aria-label="Enable web search" type="checkbox" className="accent-violet-400"
-                    checked={settingsDraft?.webSearchEnabled ?? true}
-                    onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, webSearchEnabled: event.target.checked }))} />
-                </label>
-                <p className="mt-2 text-xs leading-5 text-zinc-400">Allows search and reading public webpages when helpful.</p>
-                <label className="mt-4 block text-xs font-medium text-zinc-400">You.com API key (optional)
-                  <input type="password" autoComplete="off" aria-label="You.com API key"
-                    className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
-                    value={searchKeyDraft} onChange={(event) => setSearchKeyDraft(event.target.value)}
-                    placeholder={settings?.hasSearchApiKey ? "Key saved securely" : "Use free search"} />
-                </label>
-                <p className="mt-1 text-xs text-zinc-500">Optional keys use your You.com credits.</p>
-                <div className="mt-2 flex gap-3 text-xs">
-                  <button type="button" title="Save securely in Windows Credential Manager and apply immediately" className="text-violet-300 disabled:opacity-40" disabled={isSettingsLoading || !searchKeyDraft.trim()} onClick={() => void saveSearchKey(searchKeyDraft)}>Save key</button>
-                  {settings?.hasSearchApiKey && <button type="button" className="text-zinc-400 disabled:opacity-40" disabled={isSettingsLoading} onClick={() => void saveSearchKey(null)}>Remove key</button>}
-                </div>
+              {settingsPage === "general" && <>
+                <SettingsGroup title="Local AI" action={<button type="button" className="settings-text-button" onClick={() => void refreshProviderStatus()}>Refresh models</button>}>
+                  <SettingsRow label="Model" controlId="settings-model">
+                    <select id="settings-model" className="settings-control" value={settingsDraft?.model ?? ""}
+                      onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, model: event.target.value || null }))}>
+                      <option value="">Choose a model</option>
+                      {settingsDraft?.model && !configuredModelIsListed && <option value={settingsDraft.model}>{settingsDraft.model} (not installed)</option>}
+                      {availableModels.map((model) => <option key={model.name} value={model.name}>{model.name}</option>)}
+                    </select>
+                  </SettingsRow>
+                  <SettingsRow label="Ollama server" description="Connect to a local or remote Ollama server." controlId="settings-server">
+                    <input id="settings-server" className="settings-control" value={settingsDraft?.ollamaBaseUrl ?? ""}
+                      onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, ollamaBaseUrl: event.target.value }))} />
+                  </SettingsRow>
+                  <SettingsToggle label="Thinking" description="Let supported models reason before answering." checked={settingsDraft?.thinking ?? false}
+                    onChange={(thinking) => setSettingsDraft((draft) => draft && ({ ...draft, thinking }))} />
+                </SettingsGroup>
+                <SettingsGroup title="App">
+                  <SettingsToggle label="Launch at sign-in" description="Start Snippet when Windows starts." checked={autostartEnabled} disabled={isAutostartLoading}
+                    onChange={(enabled) => void setAutostart(enabled)} />
+                  <details ref={updatesSettingsRef} className="settings-disclosure" onToggle={() => setSourcesLayoutRevision((revision) => revision + 1)}>
+                    <summary><span><span className="settings-label">Updates</span><span className="settings-help block">{updates.currentVersion ? `Version ${updates.currentVersion}` : "Check for a new version."}</span></span></summary>
+                    <div className="settings-details-body">
+                      <UpdatesPanel update={updates} automatic={settingsDraft?.automaticUpdates ?? true}
+                        onAutomaticChange={(automaticUpdates) => setSettingsDraft((draft) => draft && ({ ...draft, automaticUpdates }))}
+                        busy={isGenerating || attachmentsBusy} />
+                    </div>
+                  </details>
+                </SettingsGroup>
+                {autostartError && <p className="mt-2 text-xs text-rose-300">{autostartError}</p>}
+                {settings?.modelSource === "environment" && <p className="settings-help mt-2">Model set by SNIPPET_OLLAMA_MODEL.</p>}
+                {providerStatus && <p className="settings-help mt-2">
+                  {providerStatus.state === "ready" && "Connected to Ollama."}
+                  {providerStatus.state === "unavailable" && providerStatus.message}
+                  {providerStatus.state === "modelNotConfigured" && "Choose an installed model to get started."}
+                  {providerStatus.state === "modelMissing" && `${providerStatus.model} is not installed.`}
+                </p>}
               </>}
 
-              {settingsPage === "ocr" && (
-                <>
-              <p className="mt-3 text-xs text-zinc-400">Captures go directly to vision models. Other models receive extracted text.</p>
-              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
-                <span className="text-sm text-zinc-200">Assist image reading with OCR</span>
-                <input aria-label="Assist image reading with OCR" type="checkbox" className="size-3.5 accent-zinc-100"
-                  checked={settingsDraft?.ocrAssistance ?? false}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, ocrAssistance: event.target.checked }))} />
-              </label>
-              <p className="mt-2 text-xs text-zinc-500">Add extracted text alongside the image for models that struggle with text.</p>
-              <details className="mt-4 text-xs text-zinc-400" open={settingsDraft?.ocrEngine === "ollama" ? true : undefined}
-                onToggle={() => setSourcesLayoutRevision((revision) => revision + 1)}>
-              <summary className="cursor-pointer">Advanced text extraction</summary>
-              <label className="mt-3 block text-xs font-medium text-zinc-400">
-                OCR engine
-                <select
-                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
-                  value={settingsDraft?.ocrEngine ?? "windows"}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    ocrEngine: event.target.value as AppConfig["ocrEngine"],
-                  }))}
-                >
-                  <option value="windows">Windows OCR (default)</option>
-                  <option value="ollama">Ollama</option>
-                </select>
-              </label>
-              <p className="mt-2 text-xs text-zinc-500">
-                {settingsDraft?.ocrEngine === "ollama"
-                  ? "Use a local vision model for Markdown, tables, and formulas."
-                  : "Fast, local text extraction using installed Windows OCR languages and your preferred language settings."}
-              </p>
-              {settingsDraft?.ocrEngine === "ollama" && (<>
-              <label className="mt-3 block text-xs font-medium text-zinc-400">
-                OCR model
-                <select
-                  className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
-                  value={settingsDraft?.ocrModel ?? ""}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    ocrModel: event.target.value,
-                  }))}
-                >
-                  {settingsDraft && !configuredOcrModelIsListed && (
-                    <option value={settingsDraft.ocrModel}>{settingsDraft.ocrModel} (not installed)</option>
-                  )}
-                  {availableModels.map((model) => (
-                    <option key={model.name} value={model.name}>{model.name}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="mt-5 block text-xs font-medium text-zinc-400">
-                Output limit <span className="float-right text-zinc-200">{settingsDraft?.ocrNumPredict ?? 0} tokens</span>
-                <input
-                  aria-label="OCR output limit"
-                  className="mt-2 w-full accent-violet-400"
-                  type="range"
-                  min="256"
-                  max="8192"
-                  step="256"
-                  value={settingsDraft?.ocrNumPredict ?? 2048}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    ocrNumPredict: Number(event.target.value),
-                  }))}
-                />
-              </label>
-
-              <label className="mt-5 block text-xs font-medium text-zinc-400">
-                Context window <span className="float-right text-zinc-200">{settingsDraft?.ocrNumCtx ?? 0} tokens</span>
-                <input
-                  aria-label="OCR context window"
-                  className="mt-2 w-full accent-violet-400"
-                  type="range"
-                  min="4096"
-                  max="32768"
-                  step="4096"
-                  value={settingsDraft?.ocrNumCtx ?? 16384}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    ocrNumCtx: Number(event.target.value),
-                  }))}
-                />
-              </label>
-              </>)}
-              </details>
-                </>
-              )}
-
-              {settingsPage === "general" && (
-                <>
-              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
-                <span>
-                  <span className="block text-sm font-medium text-zinc-200">Enable thinking</span>
-                </span>
-                <input
-                  aria-label="Enable thinking"
-                  className="size-3.5 cursor-pointer accent-zinc-100"
-                  type="checkbox"
-                  checked={settingsDraft?.thinking ?? false}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    thinking: event.target.checked,
-                  }))}
-                />
-              </label>
-
-              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
-                <span>
-                  <span className="block text-sm font-medium text-zinc-200">Launch at sign-in</span>
-                  <span className="block text-xs text-zinc-500">Keep Snippet ready in the background.</span>
-                </span>
-                <input
-                  aria-label="Launch at sign-in"
-                  className="size-3.5 cursor-pointer accent-zinc-100 disabled:cursor-not-allowed"
-                  type="checkbox"
-                  checked={autostartEnabled}
-                  disabled={isAutostartLoading}
-                  onChange={(event) => void setAutostart(event.target.checked)}
-                />
-              </label>
-              {autostartError && <p className="mt-2 text-xs text-rose-300">{autostartError}</p>}
-                </>
-              )}
-
-              {settingsPage === "shortcuts" && (
-              <div className="mt-4">
-                <p className="text-sm font-medium text-zinc-200">Shortcuts</p>
-                <p className="mt-1 text-xs text-zinc-400">
-                  Click a shortcut, then press keys.
-                </p>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  {([
-                    ["openPopup", "Open popup"],
-                    ["summarize", "Summarize"],
-                    ["explain", "Explain"],
-                    ["refine", "Refine"],
-                    ["captureScreen", "Capture screen"],
-                    ["captureRegion", "Capture region"],
-                  ] as const).map(([key, label]) => (
-                    <label key={key} className="text-xs font-medium text-zinc-400">
-                      {label}
-                      <div className="mt-1 flex gap-1">
-                        <button
-                          type="button"
-                          aria-label={`Record shortcut for ${label}`}
-                          className={`min-w-0 flex-1 rounded-lg border px-2.5 py-2 text-left text-sm outline-none transition-colors ${recordingShortcut === key ? "border-violet-400 bg-violet-500/10 text-violet-100" : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-600"}`}
-                          onClick={() => setRecordingShortcut((current) => current === key ? null : key)}
-                          onBlur={() => setRecordingShortcut((current) => current === key ? null : current)}
-                          onKeyDown={(event) => {
-                            if (recordingShortcut === key) {
-                              recordShortcut(key, event);
-                            }
-                          }}
-                        >
-                          {recordingShortcut === key ? "Press shortcut…" : settingsDraft?.shortcuts[key] || "Disabled"}
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`Disable ${label} shortcut`}
-                          title="Disable shortcut"
-                          className="grid size-8 shrink-0 place-items-center rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-500 transition-colors hover:border-zinc-600 hover:text-zinc-200"
-                          onClick={() => {
-                            updateShortcut(key, "");
-                            setRecordingShortcut(null);
-                          }}
-                        >
-                          ×
-                        </button>
+              {settingsPage === "context" && <>
+                <SettingsGroup title="Web search">
+                  <SettingsToggle label="Web access" description="Search the web and read public pages when helpful." checked={settingsDraft?.webSearchEnabled ?? true}
+                    onChange={(webSearchEnabled) => setSettingsDraft((draft) => draft && ({ ...draft, webSearchEnabled }))} />
+                  <details className="settings-disclosure" onToggle={() => setSourcesLayoutRevision((revision) => revision + 1)}>
+                    <summary><span className="settings-label">API key <span className="settings-help">(optional)</span></span></summary>
+                    <div className="settings-details-body">
+                      <label htmlFor="settings-search-key" className="settings-label">You.com API key</label>
+                      <p className="settings-help mt-1">Use your own credits, or leave blank for free search.</p>
+                      <input id="settings-search-key" type="password" autoComplete="off" className="settings-control settings-control-wide mt-2" aria-label="You.com API key"
+                        value={searchKeyDraft} onChange={(event) => setSearchKeyDraft(event.target.value)} placeholder={settings?.hasSearchApiKey ? "Key saved securely" : "Enter an API key"} />
+                      <div className="mt-2 flex gap-3">
+                        <button type="button" className="settings-text-button" disabled={isSettingsLoading || !searchKeyDraft.trim()} onClick={() => void saveSearchKey(searchKeyDraft)}>Save key</button>
+                        {settings?.hasSearchApiKey && <button type="button" className="settings-text-button" disabled={isSettingsLoading} onClick={() => void saveSearchKey(null)}>Remove key</button>}
                       </div>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              )}
+                    </div>
+                  </details>
+                </SettingsGroup>
+                <SettingsGroup title="Screen capture">
+                  <SettingsToggle label="OCR assistance" description="Add extracted text for vision models that struggle with screenshots." checked={settingsDraft?.ocrAssistance ?? false}
+                    onChange={(ocrAssistance) => setSettingsDraft((draft) => draft && ({ ...draft, ocrAssistance }))} />
+                  <details className="settings-disclosure" open={settingsDraft?.ocrEngine === "ollama" ? true : undefined}
+                    onToggle={() => setSourcesLayoutRevision((revision) => revision + 1)}>
+                    <summary><span className="settings-label">Advanced text extraction</span></summary>
+                    <SettingsRow label="OCR engine" controlId="settings-ocr-engine">
+                      <select id="settings-ocr-engine" className="settings-control" value={settingsDraft?.ocrEngine ?? "windows"}
+                        onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, ocrEngine: event.target.value as AppConfig["ocrEngine"] }))}>
+                        <option value="windows">Windows OCR</option><option value="ollama">Ollama</option>
+                      </select>
+                    </SettingsRow>
+                    {settingsDraft?.ocrEngine === "ollama" && <>
+                      <SettingsRow label="OCR model" controlId="settings-ocr-model">
+                        <select id="settings-ocr-model" className="settings-control" value={settingsDraft?.ocrModel ?? ""}
+                          onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, ocrModel: event.target.value }))}>
+                          {settingsDraft && !configuredOcrModelIsListed && <option value={settingsDraft.ocrModel}>{settingsDraft.ocrModel} (not installed)</option>}
+                          {availableModels.map((model) => <option key={model.name} value={model.name}>{model.name}</option>)}
+                        </select>
+                      </SettingsRow>
+                      <SettingsRow label="Output limit" controlId="settings-ocr-output">
+                        <div className="settings-range"><span className="settings-help">{settingsDraft?.ocrNumPredict.toLocaleString()} tokens</span>
+                          <input id="settings-ocr-output" aria-label="OCR output limit" type="range" min="256" max="8192" step="256" value={settingsDraft?.ocrNumPredict ?? 2048}
+                            onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, ocrNumPredict: Number(event.target.value) }))} />
+                        </div>
+                      </SettingsRow>
+                      <SettingsRow label="Context window" controlId="settings-ocr-context">
+                        <div className="settings-range"><span className="settings-help">{settingsDraft?.ocrNumCtx.toLocaleString()} tokens</span>
+                          <input id="settings-ocr-context" aria-label="OCR context window" type="range" min="4096" max="32768" step="4096" value={settingsDraft?.ocrNumCtx ?? 16384}
+                            onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, ocrNumCtx: Number(event.target.value) }))} />
+                        </div>
+                      </SettingsRow>
+                    </>}
+                  </details>
+                </SettingsGroup>
+              </>}
 
-              {settingsPage !== "updates" && settings?.modelSource === "environment" && (
-                <p className="mt-3 text-xs text-zinc-400">
-                  `SNIPPET_OLLAMA_MODEL` is overriding the saved model.
-                </p>
-              )}
-              {settingsPage === "general" && providerStatus && (
-                <p className="mt-3 text-xs text-zinc-400">
-                  {providerStatus.state === "ready" && "Ollama is ready."}
-                  {providerStatus.state === "unavailable" && providerStatus.message}
-                  {providerStatus.state === "modelNotConfigured" && "Choose one of the installed models."}
-                  {providerStatus.state === "modelMissing" && `${providerStatus.model} is not installed.`}
-                </p>
-              )}
+              {settingsPage === "shortcuts" && <SettingsGroup title="Keyboard shortcuts" description="Select a binding, then press your shortcut. Clear it to disable the action.">
+                {([
+                  ["openPopup", "Open Snippet"], ["summarize", "Summarize"], ["explain", "Explain"],
+                  ["refine", "Refine"], ["captureScreen", "Capture screen"], ["captureRegion", "Capture region"],
+                ] as const).map(([key, label]) => <SettingsRow key={key} label={label}>
+                  <div className="flex min-w-0 items-center gap-1">
+                    <button type="button" aria-label={`Record shortcut for ${label}`} className={`settings-control settings-shortcut ${recordingShortcut === key ? "settings-shortcut-recording" : ""}`}
+                      onClick={() => setRecordingShortcut((current) => current === key ? null : key)}
+                      onBlur={() => setRecordingShortcut((current) => current === key ? null : current)}
+                      onKeyDown={(event) => { if (recordingShortcut === key) recordShortcut(key, event); }}>
+                      {recordingShortcut === key ? "Press keys..." : settingsDraft?.shortcuts[key] || "Disabled"}
+                    </button>
+                    <button type="button" aria-label={`Disable ${label} shortcut`} title="Clear shortcut" className="settings-clear"
+                      onClick={() => { updateShortcut(key, ""); setRecordingShortcut(null); }}>
+                      <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5 fill-none stroke-current stroke-[1.6]" strokeLinecap="round"><path d="m7 7 10 10M7 17 17 7" /></svg>
+                    </button>
+                  </div>
+                </SettingsRow>)}
+              </SettingsGroup>}
               {settingsError && <p className="mt-3 text-xs leading-5 text-amber-200">{settingsError}</p>}
 
-              <div className="mt-3 flex items-center justify-between gap-3">
+              </div>
+              <div className="mt-3 flex shrink-0 items-center justify-between gap-3 border-t border-zinc-800 pt-3">
                 <span className="text-xs text-zinc-500">
-                  {isSettingsLoading ? "Saving / loading settings…" : settingsPage === "updates" ? "Preferences apply when saved." : ""}
+                  {isSettingsLoading ? "Saving / loading settings…" : ""}
                 </span>
                 <button
                   type="button"
-                  className="rounded-full bg-zinc-100 px-3.5 py-2 text-xs font-bold text-zinc-950 transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
+                  className="rounded-full bg-zinc-100 px-4 py-1.5 text-xs font-medium text-zinc-950 transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
                   disabled={!settingsDraft || isSettingsLoading}
                   onClick={() => void saveSettings()}
                 >
-                  Save settings
+                  Save
                 </button>
               </div>
             </section>
