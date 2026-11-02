@@ -7,7 +7,14 @@ export type CapturedContextImage = {
   title?: string;
   preview: { dataUrl: string; width: number; height: number };
 };
-type WindowChoice = { id: number; pid: number; title: string; appName: string; minimized: boolean };
+type WindowChoice = { id: number; pid: number; title: string; appName: string; minimized: boolean; iconDataUrl?: string | null };
+
+export function WindowAppIcon({ source }: { source?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [source]);
+  if (source && !failed) return <img src={source} alt="" aria-hidden="true" className="size-5 shrink-0 object-contain" onError={() => setFailed(true)} />;
+  return <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5 shrink-0 fill-none stroke-zinc-500 stroke-[1.5]"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /></svg>;
+}
 
 export function AttachmentPicker({ conversationId, filesDisabled, onFile, onCapture, onClose, onBusy, onLayoutChange }: {
   conversationId: number; filesDisabled: boolean;
@@ -108,7 +115,7 @@ export function AttachmentPicker({ conversationId, filesDisabled, onFile, onCapt
       <div className="preview-scroll max-h-48 overflow-y-auto" aria-label="Open windows" aria-busy={loading || capturing}>
         {loading ? <p className="p-2 text-xs text-zinc-500">Finding windows…</p> : filtered.map((window) =>
           <button type="button" key={`${window.id}-${window.pid}`} className={`${button} flex items-center gap-2`} disabled={capturing} onClick={() => void capture(window)}>
-            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5 shrink-0 fill-none stroke-zinc-500 stroke-[1.5]"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /></svg>
+            <WindowAppIcon source={window.iconDataUrl} />
             <span className="min-w-0 flex-1"><span className="block truncate" title={window.title}>{window.title}</span><span className="block truncate text-[11px] text-zinc-500">{window.appName || "Window"}{window.minimized ? " · Minimized" : ""}</span></span>
           </button>)}
         {!loading && !windows.length && <p className="p-2 text-xs text-zinc-500">No available windows. Open an app and refresh.</p>}

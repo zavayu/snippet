@@ -1,10 +1,16 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AttachmentPicker, ImageAttachmentPreview } from "./AttachmentPicker";
+import { AttachmentPicker, ImageAttachmentPreview, WindowAppIcon } from "./AttachmentPicker";
 import { AttachFilesButton } from "./FileAttachments";
 
 describe("context attachments", () => {
+  it("uses app icons when available and a window glyph otherwise", () => {
+    const icon = renderToStaticMarkup(createElement(WindowAppIcon, { source: "data:image/png;base64,abc" }));
+    expect(icon).toContain('src="data:image/png;base64,abc"');
+    expect(icon).toContain('alt=""');
+    expect(renderToStaticMarkup(createElement(WindowAppIcon, { source: null }))).toContain("<svg");
+  });
   it("keeps window attachment available when the file limit is reached", () => {
     const html = renderToStaticMarkup(createElement(AttachmentPicker, {
       conversationId: 1, filesDisabled: true, onFile() {}, onCapture() {}, onClose() {}, onBusy() {}, onLayoutChange() {},

@@ -2,6 +2,9 @@
 
 use serde::Serialize;
 
+#[cfg(target_os = "windows")]
+mod icons;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowChoice {
@@ -10,6 +13,7 @@ pub struct WindowChoice {
     pub title: String,
     pub app_name: String,
     pub minimized: bool,
+    pub icon_data_url: Option<String>,
 }
 
 pub fn list() -> Result<Vec<WindowChoice>, String> {
@@ -23,12 +27,17 @@ pub fn list() -> Result<Vec<WindowChoice>, String> {
                 return None;
             }
             let id = window.id().ok()?;
+            #[cfg(target_os = "windows")]
+            let icon_data_url = icons::for_window(id, pid);
+            #[cfg(not(target_os = "windows"))]
+            let icon_data_url = None;
             Some(WindowChoice {
                 id,
                 pid,
                 title,
                 app_name: window.app_name().unwrap_or_default(),
                 minimized: window.is_minimized().unwrap_or(false),
+                icon_data_url,
             })
         })
         .collect())
