@@ -18,6 +18,7 @@ import { RequestInspector } from "./components/RequestInspector";
 import { UpdatesPanel } from "./components/UpdatesPanel";
 import { updateController, useUpdates } from "./useUpdates";
 import { conversationReducer, generationLabel, isTurnActive, type GenerationEvent, type TurnIdentity } from "./conversation";
+import { AttachmentPicker, ImageAttachmentPreview, type CapturedContextImage } from "./components/AttachmentPicker";
 import { AttachFilesButton, useFileAttachments, type AttachedFile } from "./components/FileAttachments";
 import { ConversationPanel } from "./components/ConversationPanel";
 import { handlePromptKeyDown } from "./promptKeyboard";
@@ -29,7 +30,6 @@ const POPUP_MAX_HEIGHT = 900;
 const POPUP_SHADOW_MARGIN = 24;
 
 type CaptureState = "waiting" | "captured" | "error";
-type OcrState = "idle" | "reading" | "ready" | "error";
 type QuickAction = "explain" | "summarize" | "refine";
 
 const QUICK_ACTIONS: QuickAction[] = ["explain", "summarize", "refine"];
@@ -57,8 +57,6 @@ type ShortcutConfig = {
   refine: string;
   captureScreen: string;
   captureRegion: string;
-  readScreen: string;
-  readRegion: string;
 };
 
 type SelectionCaptureEvent = {
@@ -66,16 +64,7 @@ type SelectionCaptureEvent = {
   action: QuickAction | null;
 };
 
-type ImageCaptureEvent = {
-  imageId: number;
-  source: "screen" | "region";
-  preview: {
-    dataUrl: string;
-    width: number;
-    height: number;
-  };
-  autoRead: boolean;
-};
+type ImageCaptureEvent = CapturedContextImage;
 
 type CaptureFailure = {
   message: string;
@@ -105,7 +94,7 @@ type AppConfig = {
   ocrNumPredict: number;
   ocrNumCtx: number;
   thinking: boolean;
-  visionEnabled: boolean;
+  ocrAssistance: boolean;
   hasCompletedOnboarding: boolean;
   automaticUpdates: boolean;
   webSearchEnabled: boolean;
@@ -139,12 +128,6 @@ type GenerationFinished = GenerationEvent;
 
 type GenerationFailure = GenerationEvent & {
   message: string;
-};
-
-type ScreenReadFinished = {
-  requestId: number;
-  imageId: number;
-  text: string;
 };
 
 type SettingsPage = "general" | "ocr" | "search" | "shortcuts" | "updates";
@@ -215,15 +198,14 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [captureState, setCaptureState] = useState<CaptureState>("waiting");
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
+  const [isAttachmentPickerOpen, setIsAttachmentPickerOpen] = useState(false);
+  const [submittedImageId, setSubmittedImageId] = useState<number | null>(null);
+  const lastSubmittedImageIdRef = useRef<number | null>(null);
   const [image, setImage] = useState<ImageCaptureEvent | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [captureNotice, setCaptureNotice] = useState<PopupOpenedEvent | null>(null);
   const [isRetryingCapture, setIsRetryingCapture] = useState(false);
   const [customInstruction, setCustomInstruction] = useState("");
-  const [ocrState, setOcrState] = useState<OcrState>("idle");
-  const [ocrSource, setOcrSource] = useState<ImageCaptureEvent["source"] | null>(null);
-  const [ocrError, setOcrError] = useState<string | null>(null);
-  const [queuedOcrIntent, setQueuedOcrIntent] = useState<PromptIntent | null>(null);
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
@@ -239,7 +221,6 @@ function App() {
   const [isAutostartLoading, setIsAutostartLoading] = useState(true);
   const [autostartError, setAutostartError] = useState<string | null>(null);
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
-  const [isAttachedTextExpanded, setIsAttachedTextExpanded] = useState(false);
   const [promptPreview, setPromptPreview] = useState<ChatMessage[] | null>(null);
   const [promptPreviewError, setPromptPreviewError] = useState<string | null>(null);
   const [isPromptPreviewLoading, setIsPromptPreviewLoading] = useState(false);
@@ -247,20 +228,15 @@ function App() {
   const [isPopupSurfaceVisible, setIsPopupSurfaceVisible] = useState(false);
   const [popupOpenSequence, setPopupOpenSequence] = useState(0);
   const popupContentRef = useRef<HTMLDivElement>(null);
+  const attachmentPopoverRef = useRef<HTMLDivElement>(null);
+  const attachmentButtonRef = useRef<HTMLButtonElement>(null);
   const [sourcesLayoutRevision, setSourcesLayoutRevision] = useState(0);
   const popupPositionRequestRef = useRef<{ cursor: Promise<PhysicalPosition | null> } | null>(null);
   const popupSelectionBoundsRef = useRef<SelectionBounds | null>(null);
   const lastIntentRef = useRef<PromptIntent | null>(null);
-  const pendingOcrIntentRef = useRef<PromptIntent | null>(null);
-  const ocrImageIdRef = useRef<number | null>(null);
   const startGenerationRef = useRef<(
     intentOverride?: PromptIntent,
     selectionOverride?: CapturedSelection,
-    bypassOcrWait?: boolean,
-  ) => Promise<void> | null>(null);
-  const startScreenReadRef = useRef<(
-    imageId: number,
-    source: ImageCaptureEvent["source"],
   ) => Promise<void> | null>(null);
   const initialInputRef = useRef<HTMLTextAreaElement>(null);
   const [initialInputHeight, setInitialInputHeight] = useState(0);
@@ -273,14 +249,28 @@ function App() {
   const hasSubmittedPrompt = conversation.turns.length > 0;
   const attachmentControls = useFileAttachments({
     inputRef: fileInputRef, conversationId: conversation.conversationId, files: attachedFiles, hiddenPreviewIds: submittedFileIds,
-    disabled: attachmentsBusy || isGenerating || ocrState === "reading" || updates.phase === "installing",
+    disabled: attachmentsBusy || isGenerating || updates.phase === "installing",
     onChange: (files) => { if (conversationIdRef.current === conversation.conversationId) setAttachedFiles(files); },
     onBusy: (busy) => { if (conversationIdRef.current === conversation.conversationId) { attachmentsBusyRef.current = busy; setAttachmentsBusy(busy); } },
     onLayoutChange: () => setSourcesLayoutRevision((revision) => revision + 1),
   });
   const fileAttachButton = <AttachFilesButton
-    disabled={attachmentsBusy || isGenerating || ocrState === "reading" || updates.phase === "installing" || attachedFiles.length >= 5}
-    busy={attachmentsBusy} onClick={() => fileInputRef.current?.click()} />;
+    disabled={attachmentsBusy || isGenerating || updates.phase === "installing"}
+    busy={attachmentsBusy} onClick={() => setIsAttachmentPickerOpen((open) => !open)}
+    buttonRef={attachmentButtonRef}
+    expanded={isAttachmentPickerOpen} />;
+  const attachmentPicker = isAttachmentPickerOpen && <AttachmentPicker
+    key={conversation.conversationId} conversationId={conversation.conversationId}
+    filesDisabled={attachedFiles.length >= 5}
+    onFile={() => fileInputRef.current?.click()}
+    onCapture={(capture) => { setImage(capture); setCaptureState("captured"); }}
+    onClose={() => setIsAttachmentPickerOpen(false)}
+    onBusy={(busy) => { attachmentsBusyRef.current = busy; setAttachmentsBusy(busy); }}
+    onLayoutChange={() => setSourcesLayoutRevision((revision) => revision + 1)} />;
+  const imagePreview = image && image.imageId !== submittedImageId && <ImageAttachmentPreview
+    image={image} disabled={attachmentsBusy || isGenerating}
+    onLayoutChange={() => setSourcesLayoutRevision((revision) => revision + 1)}
+    onRemove={() => { setImage(null); void invoke("discard_image_capture"); }} />;
   useLayoutEffect(() => {
     const input = initialInputRef.current;
     if (!input) return;
@@ -308,20 +298,16 @@ function App() {
     setAttachmentsBusy(false);
     attachmentsBusyRef.current = false;
     lastIntentRef.current = null;
-    pendingOcrIntentRef.current = null;
-    ocrImageIdRef.current = null;
     setSelection(null);
     setImage(null);
-    setOcrState("idle");
-    setOcrSource(null);
-    setOcrError(null);
-    setQueuedOcrIntent(null);
+    setSubmittedImageId(null);
+    lastSubmittedImageIdRef.current = null;
+    setIsAttachmentPickerOpen(false);
     setErrorMessage(null);
     setCaptureNotice(null);
     setIsRetryingCapture(false);
     setCustomInstruction("");
     setIsSelectionExpanded(false);
-    setIsAttachedTextExpanded(false);
     setPromptPreview(null);
     setPromptPreviewError(null);
     setIsPromptPreviewLoading(false);
@@ -348,6 +334,9 @@ function App() {
     const identity = { conversationId: conversationIdRef.current, turnId: ++nextTurnIdRef.current };
     activeTurnRef.current = identity;
     setSubmittedFileIds(attachedFiles.map((file) => file.fileId));
+    setIsAttachmentPickerOpen(false);
+    lastSubmittedImageIdRef.current = typeof request.imageId === "number" ? request.imageId : null;
+    if (lastSubmittedImageIdRef.current !== null) setSubmittedImageId(lastSubmittedImageIdRef.current);
     dispatchConversation({ type: "submit", identity, prompt: prompt.trim(), reference, kind, retry });
     try {
       const pending = invoke<GenerationStarted>(kind === "initial" ? "generate_for_selection" : "continue_conversation", {
@@ -465,21 +454,14 @@ function App() {
           void startGenerationRef.current?.(
             { kind: "quick-action", action: event.payload.action },
             capturedSelection,
-            true,
           );
         }
       }),
       listen<ImageCaptureEvent>("image-captured", (event) => {
         resetConversation();
         openChatPopup();
-        ocrImageIdRef.current = event.payload.autoRead ? event.payload.imageId : null;
-        setImage(event.payload.autoRead ? null : event.payload);
-        setOcrState(event.payload.autoRead ? "reading" : "idle");
-        setOcrSource(event.payload.autoRead ? event.payload.source : null);
+        setImage(event.payload);
         setCaptureState("captured");
-        if (event.payload.autoRead) {
-          void startScreenReadRef.current?.(event.payload.imageId, event.payload.source);
-        }
       }),
       listen<CaptureFailure>("selection-capture-failed", (event) => {
         resetConversation();
@@ -510,47 +492,6 @@ function App() {
       }),
       listen<GenerationFailure>("generation-failed", (event) => {
         if (event.payload.context) finishTurn(event.payload, "error", event.payload.message);
-      }),
-      listen<ScreenReadFinished>("screen-read-finished", (event) => {
-        if (ocrImageIdRef.current !== event.payload.imageId) {
-          return;
-        }
-        ocrImageIdRef.current = null;
-        const screenText: CapturedSelection = {
-          text: event.payload.text,
-          source: "ocr",
-          truncated: false,
-          clipboardRestored: true,
-          bounds: null,
-          editability: "unknown",
-          replacementId: null,
-        };
-        const pendingIntent = pendingOcrIntentRef.current;
-        pendingOcrIntentRef.current = null;
-        setSelection(screenText);
-        setIsAttachedTextExpanded(false);
-        setOcrState("ready");
-        setOcrError(null);
-        setQueuedOcrIntent(null);
-        void invoke("discard_image_capture");
-        if (pendingIntent) {
-          const conversationId = conversationIdRef.current;
-          window.queueMicrotask(() => {
-            if (conversationIdRef.current === conversationId) {
-              void startGenerationRef.current?.(pendingIntent, screenText, true);
-            }
-          });
-        }
-      }),
-      listen<GenerationFailure & { imageId: number }>("screen-read-failed", (event) => {
-        if (ocrImageIdRef.current !== event.payload.imageId) {
-          return;
-        }
-        ocrImageIdRef.current = null;
-        pendingOcrIntentRef.current = null;
-        setOcrState("error");
-        setOcrError(event.payload.message);
-        setQueuedOcrIntent(null);
       }),
     ]);
 
@@ -595,14 +536,38 @@ function App() {
           ? Math.min(POPUP_MAX_HEIGHT, Math.max(POPUP_MIN_HEIGHT, monitor.workArea.size.height / monitor.scaleFactor - 16))
           : POPUP_MAX_HEIGHT;
         popupContentRef.current?.style.setProperty("--popup-max-height", `${maxHeight}px`);
-        const contentHeight = popupContentRef.current?.getBoundingClientRect().height ?? POPUP_MIN_HEIGHT;
-        const desiredHeight = Math.max(Math.ceil(contentHeight) + POPUP_SHADOW_MARGIN * 2, POPUP_MIN_HEIGHT);
+        const contentRect = popupContentRef.current?.getBoundingClientRect();
+        const contentHeight = contentRect?.height ?? POPUP_MIN_HEIGHT;
+        let bottom = (contentRect?.top ?? POPUP_SHADOW_MARGIN) + contentHeight;
+        const popover = attachmentPopoverRef.current;
+        const trigger = attachmentButtonRef.current?.getBoundingClientRect();
+        if (popover && trigger) {
+          popover.style.setProperty("--attachment-menu-max-height", `${maxHeight - POPUP_SHADOW_MARGIN * 2}px`);
+          const menu = popover.getBoundingClientRect();
+          const composerTop = attachmentButtonRef.current?.closest("form")?.getBoundingClientRect().top ?? trigger.top;
+          const preferredTop = conversation.expanded
+            ? composerTop - menu.height + 8
+            : bottom - 8;
+          const top = Math.max(POPUP_SHADOW_MARGIN, Math.min(preferredTop, maxHeight - menu.height - POPUP_SHADOW_MARGIN));
+          const left = Math.max(POPUP_SHADOW_MARGIN, Math.min((contentRect?.left ?? POPUP_SHADOW_MARGIN) + 8, POPUP_WIDTH - menu.width - POPUP_SHADOW_MARGIN));
+          popover.style.top = `${top}px`;
+          popover.style.left = `${left}px`;
+          bottom = Math.max(bottom, top + menu.height);
+        }
+        const desiredHeight = Math.max(Math.ceil(bottom) + POPUP_SHADOW_MARGIN, POPUP_MIN_HEIGHT);
         const nextHeight = Math.min(desiredHeight, maxHeight);
         await popupWindow.setSize(new LogicalSize(POPUP_WIDTH, nextHeight));
 
         if (cancelled || popupSelectionBoundsRef.current !== selectionBounds
           || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
           return;
+        }
+
+        // Reveal only after the native window has enough room for the popover.
+        if (popover) {
+          const firstOpening = popover.style.visibility !== "visible";
+          popover.style.visibility = "visible";
+          if (firstOpening) popover.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
         }
 
         const popupSize = await popupWindow.outerSize();
@@ -646,6 +611,9 @@ function App() {
   }, [
     popupOpenSequence,
     sourcesLayoutRevision,
+    isAttachmentPickerOpen,
+    image,
+    submittedImageId,
     attachedFiles,
     submittedFileIds,
     attachmentsBusy,
@@ -656,10 +624,6 @@ function App() {
     isRetryingCapture,
     errorMessage,
     generationState,
-    ocrError,
-    ocrState,
-    queuedOcrIntent,
-    isAttachedTextExpanded,
     isPromptPreviewExpanded,
     isPromptPreviewLoading,
     isSelectionExpanded,
@@ -695,19 +659,11 @@ function App() {
   const startGeneration = async (
     intentOverride?: PromptIntent,
     selectionOverride?: CapturedSelection,
-    bypassOcrWait = false,
   ) => {
     if (updateController.getSnapshot().phase === "installing") return;
-    if (ocrState === "reading" && !bypassOcrWait) {
-      const intent = resolveIntent(intentOverride);
-      pendingOcrIntentRef.current = intent;
-      setQueuedOcrIntent(intent);
-      return;
-    }
-
     const intent = resolveIntent(intentOverride);
     const activeSelection = selectionOverride ?? selection;
-    const activeImage = selectionOverride || intent.kind === "research" ? null : image;
+    const activeImage = selectionOverride ? null : image;
     if (!activeSelection && !activeImage && intent.kind === "quick-action") {
       return;
     }
@@ -719,36 +675,10 @@ function App() {
       selectedText: activeSelection?.text ?? null,
       imageId: activeImage?.imageId ?? null,
       intent,
-    }, Boolean(currentTurn), [activeImage ? "Screenshot attached" : activeSelection ? "Reference text attached" : "", ...attachedFiles.map((file) => file.name)].filter(Boolean).join(" · ") || undefined);
+    }, Boolean(currentTurn), [activeImage ? activeImage.title ? `Window: ${activeImage.title}` : "Screenshot attached" : activeSelection ? "Reference text attached" : "", ...attachedFiles.map((file) => file.name)].filter(Boolean).join(" · ") || undefined);
   };
 
   startGenerationRef.current = startGeneration;
-
-  const startScreenRead = async (imageId: number, source: ImageCaptureEvent["source"]) => {
-    if (updateController.getSnapshot().phase === "installing") return;
-    ocrImageIdRef.current = imageId;
-    setImage(null);
-    setOcrState("reading");
-    setOcrSource(source);
-    setOcrError(null);
-
-    try {
-      await invoke<GenerationStarted>("read_screen", {
-        request: { imageId, conversationId: conversationIdRef.current },
-      });
-    } catch (error) {
-      if (ocrImageIdRef.current !== imageId) {
-        return;
-      }
-      ocrImageIdRef.current = null;
-      pendingOcrIntentRef.current = null;
-      setOcrState("error");
-      setOcrError(errorText(error));
-      setQueuedOcrIntent(null);
-    }
-  };
-
-  startScreenReadRef.current = startScreenRead;
 
   const previewPrompt = async () => {
     if ((!selection && !image) || !showDevelopmentPreviews) {
@@ -932,7 +862,7 @@ function App() {
       <section className="mx-auto w-full max-w-xl">
         <div
           ref={popupContentRef}
-          className={`popup-surface ${isPopupSurfaceVisible ? "popup-surface--enter" : "popup-surface--hidden"} rounded-[28px] bg-zinc-900 p-4 shadow-lg shadow-black/50`}
+          className={`popup-surface ${isSettingsOpen ? "popup-surface--settings" : ""} ${isPopupSurfaceVisible ? "popup-surface--enter" : "popup-surface--hidden"} rounded-[28px] bg-zinc-900 p-4 shadow-lg shadow-black/50`}
         >
           <header
             className={`relative -mx-4 -mt-4 mb-3 flex cursor-grab select-none items-center gap-3 pl-4 pt-4 active:cursor-grabbing ${conversation.expanded && !isSettingsOpen ? "pr-32" : "pr-24"}`}
@@ -1074,100 +1004,14 @@ function App() {
 
           {!isSettingsOpen && !hasSubmittedPrompt && (
             <div>
-              {ocrState !== "idle" && (
-                <>
-                  <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
-                    {ocrState === "reading" && (
-                      <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5 shrink-0 animate-spin fill-none">
-                        <circle cx="12" cy="12" r="8" className="stroke-zinc-800" strokeWidth="2.5" />
-                        <path d="M20 12a8 8 0 0 0-8-8" className="stroke-zinc-400" strokeLinecap="round" strokeWidth="2.5" />
-                      </svg>
-                    )}
-                    <span className="min-w-0 flex-1 text-[10px] text-zinc-400">
-                      {ocrState === "reading" && `Reading ${ocrSource === "region" ? "region" : "screen"}…${queuedOcrIntent ? " Your request will send when it is ready." : ""}`}
-                      {ocrState === "ready" && `${ocrSource === "region" ? "Region" : "Screen"} text attached`}
-                      {ocrState === "error" && ocrError}
-                    </span>
-                    {ocrState === "ready" && (
-                      <div className="flex items-center gap-1">
-                        {selection && (
-                          <button
-                            type="button"
-                            aria-expanded={isAttachedTextExpanded}
-                            aria-label={isAttachedTextExpanded ? "Hide attached text" : "Show attached text"}
-                            title={isAttachedTextExpanded ? "Hide attached text" : "Show attached text"}
-                            className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                            onClick={() => setIsAttachedTextExpanded((expanded) => !expanded)}
-                          >
-                            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5 fill-none stroke-current stroke-[2]">
-                              <path strokeLinecap="round" strokeLinejoin="round" d={isAttachedTextExpanded ? "m7 15 5-5 5 5" : "m7 9 5 5 5-5"} />
-                            </svg>
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          aria-label="Remove extracted screen text"
-                          className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                          onClick={() => {
-                            setSelection(null);
-                            setOcrState("idle");
-                            setOcrSource(null);
-                            setOcrError(null);
-                            setIsAttachedTextExpanded(false);
-                          }}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  {ocrState === "ready" && isAttachedTextExpanded && selection && (
-                    <blockquote className="preview-scroll mt-2 max-h-44 overflow-y-auto whitespace-pre-wrap rounded-lg border border-zinc-800/80 bg-zinc-950/50 p-3 text-xs leading-5 text-zinc-400">
-                      {selection.text}
-                    </blockquote>
-                  )}
-                  <div className="mb-3" />
-                </>
-              )}
-              {image && (
-                <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
-                  <img
-                    alt={image.source === "region" ? "Captured region" : "Captured screen"}
-                    className="size-10 rounded object-cover"
-                    src={image.preview.dataUrl}
-                  />
-                  <span className="min-w-0 flex-1 text-[10px] text-zinc-400">
-                    {image.source === "region" ? "Region capture" : "Screen capture"} · {image.preview.width} × {image.preview.height}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="Remove captured image"
-                    className="grid size-6 cursor-pointer place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                    onClick={() => {
-                      setImage(null);
-                      void invoke("discard_image_capture");
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
+              {imagePreview}
               <div className="flex flex-wrap gap-2">
-                {image && (
-                  <button
-                    type="button"
-                    className="cursor-pointer rounded-full bg-violet-500 px-3.5 py-1.5 text-sm font-normal text-white transition-colors hover:bg-violet-400"
-                    onClick={() => void startScreenRead(image.imageId, image.source)}
-                  >
-                    {image.source === "region" ? "Read region" : "Read screen"}
-                  </button>
-                )}
                 {selection && (settings?.config.webSearchEnabled ?? true) && <button
                   type="button"
                   className="cursor-pointer rounded-full bg-zinc-700 px-3.5 py-1.5 text-sm font-normal text-zinc-300 transition-colors hover:bg-zinc-600 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
                   onClick={() => void startGeneration({ kind: "research", instruction: customInstruction.trim() })}
                 >Research</button>}
-                {(selection || image || ocrState === "reading") && QUICK_ACTIONS.filter((action) => action !== "refine" || selection?.editability === "editable").map((action) => (
+                {(selection || image) && QUICK_ACTIONS.filter((action) => action !== "refine" || selection?.editability === "editable").map((action) => (
                   <button
                     key={action}
                     type="button"
@@ -1182,7 +1026,7 @@ function App() {
           )}
 
           {isSettingsOpen && (
-            <section className="settings-scroll min-h-64 px-1 pr-2 pt-1">
+            <section className="settings-scroll min-h-0 overflow-y-auto px-1 pr-2 pt-1">
               {isOnboardingOpen && (
                 <section className="mb-4 rounded-xl border border-violet-400/30 bg-violet-500/10 p-3">
                   <p className="text-sm font-semibold text-zinc-100">Welcome to Snippet</p>
@@ -1231,7 +1075,7 @@ function App() {
               <div className="mb-4 flex gap-1 rounded-lg bg-zinc-950/50 p-1">
                 {([
                   ["general", "General"],
-                  ["ocr", "Read screen"],
+                  ["ocr", "Screen capture"],
                   ["search", "Web search"],
                   ["shortcuts", "Shortcuts"],
                   ["updates", "Updates"],
@@ -1251,7 +1095,7 @@ function App() {
                 <UpdatesPanel update={updates}
                   automatic={settingsDraft?.automaticUpdates ?? true}
                   onAutomaticChange={(enabled) => setSettingsDraft((draft) => draft && ({ ...draft, automaticUpdates: enabled }))}
-                  busy={isGenerating || ocrState === "reading"} />
+                  busy={isGenerating} />
               )}
 
               {settingsPage === "general" && (
@@ -1313,6 +1157,17 @@ function App() {
 
               {settingsPage === "ocr" && (
                 <>
+              <p className="mt-3 text-xs text-zinc-400">Captures go directly to vision models. Other models receive extracted text.</p>
+              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
+                <span className="text-sm text-zinc-200">Assist image reading with OCR</span>
+                <input aria-label="Assist image reading with OCR" type="checkbox" className="size-3.5 accent-zinc-100"
+                  checked={settingsDraft?.ocrAssistance ?? false}
+                  onChange={(event) => setSettingsDraft((draft) => draft && ({ ...draft, ocrAssistance: event.target.checked }))} />
+              </label>
+              <p className="mt-2 text-xs text-zinc-500">Add extracted text alongside the image for models that struggle with text.</p>
+              <details className="mt-4 text-xs text-zinc-400" open={settingsDraft?.ocrEngine === "ollama" ? true : undefined}
+                onToggle={() => setSourcesLayoutRevision((revision) => revision + 1)}>
+              <summary className="cursor-pointer">Advanced text extraction</summary>
               <label className="mt-3 block text-xs font-medium text-zinc-400">
                 OCR engine
                 <select
@@ -1334,7 +1189,7 @@ function App() {
               </p>
               {settingsDraft?.ocrEngine === "ollama" && (<>
               <label className="mt-3 block text-xs font-medium text-zinc-400">
-                Read screen model
+                OCR model
                 <select
                   className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-600"
                   value={settingsDraft?.ocrModel ?? ""}
@@ -1386,6 +1241,7 @@ function App() {
                 />
               </label>
               </>)}
+              </details>
                 </>
               )}
 
@@ -1403,22 +1259,6 @@ function App() {
                   onChange={(event) => setSettingsDraft((draft) => draft && ({
                     ...draft,
                     thinking: event.target.checked,
-                  }))}
-                />
-              </label>
-
-              <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2">
-                <span>
-                  <span className="block text-sm font-medium text-zinc-200">Enable direct image analysis</span>
-                </span>
-                <input
-                  aria-label="Enable direct image analysis"
-                  className="size-3.5 cursor-pointer accent-zinc-100"
-                  type="checkbox"
-                  checked={settingsDraft?.visionEnabled ?? false}
-                  onChange={(event) => setSettingsDraft((draft) => draft && ({
-                    ...draft,
-                    visionEnabled: event.target.checked,
                   }))}
                 />
               </label>
@@ -1455,8 +1295,6 @@ function App() {
                     ["refine", "Refine"],
                     ["captureScreen", "Capture screen"],
                     ["captureRegion", "Capture region"],
-                    ["readScreen", "Read screen"],
-                    ["readRegion", "Read region"],
                   ] as const).map(([key, label]) => (
                     <label key={key} className="text-xs font-medium text-zinc-400">
                       {label}
@@ -1531,15 +1369,17 @@ function App() {
               conversation={conversation}
               submissionBlocked={attachmentsBusy}
               composerAction={fileAttachButton}
-              composerAttachments={attachmentControls.list}
+              composerAttachments={<>{attachmentControls.list}{imagePreview}</>}
               replacementId={selection?.editability === "editable" && !selection.truncated ? selection.replacementId : null}
               onReplacementUsed={(id) => setSelection((current) => current?.replacementId === id ? { ...current, replacementId: null } : current)}
               onContinue={() => dispatchConversation({ type: "expand" })}
               onNewConversation={startNewConversation}
-              onSubmit={(instruction) => void submitTurn("follow-up", instruction, { instruction })}
+              onSubmit={(instruction) => void submitTurn("follow-up", instruction, {
+                instruction, imageId: image && image.imageId !== submittedImageId ? image.imageId : null,
+              }, false, image && image.imageId !== submittedImageId ? `Window: ${image.title ?? "Screenshot"}` : undefined)}
               onRetry={() => {
                 if (currentTurn?.kind === "follow-up") {
-                  void submitTurn("follow-up", currentTurn.prompt, { instruction: currentTurn.prompt }, true);
+                  void submitTurn("follow-up", currentTurn.prompt, { instruction: currentTurn.prompt, imageId: image && image.imageId !== submittedImageId ? image.imageId : lastSubmittedImageIdRef.current }, true, currentTurn.reference);
                 } else {
                   void startGeneration(lastIntentRef.current ?? undefined);
                 }
@@ -1655,6 +1495,7 @@ function App() {
             <p className="mt-3 text-xs leading-5 text-amber-200">{errorMessage}</p>
           )}
         </div>
+        {!isSettingsOpen && isAttachmentPickerOpen && <div ref={attachmentPopoverRef} className="attachment-popover">{attachmentPicker}</div>}
       </section>
     </main>
   );

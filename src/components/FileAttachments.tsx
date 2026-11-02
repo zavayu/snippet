@@ -97,9 +97,9 @@ export function FileAttachments(props: Props) {
   return <>{picker}{list}</>;
 }
 
-export function AttachFilesButton({ disabled, busy, onClick }: { disabled: boolean; busy: boolean; onClick: () => void }) {
-  return <button type="button" aria-label="Attach files"
-    title={busy ? "Updating files..." : "Add files"}
+export function AttachFilesButton({ disabled, busy, onClick, expanded = false, buttonRef }: { disabled: boolean; busy: boolean; onClick: () => void; expanded?: boolean; buttonRef?: RefObject<HTMLButtonElement | null> }) {
+  return <button ref={buttonRef} type="button" aria-label="Add context" aria-haspopup="dialog" aria-expanded={expanded}
+    title={busy ? "Adding context..." : "Add context"}
     disabled={disabled} onClick={onClick}
     className="grid size-8 shrink-0 self-start cursor-pointer place-items-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-violet-400 disabled:cursor-not-allowed disabled:opacity-40">
     <svg aria-hidden="true" viewBox="0 0 24 24" className={`size-4.5 fill-none stroke-current stroke-[1.8] ${busy ? "animate-spin" : ""}`} strokeLinecap="round">

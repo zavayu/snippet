@@ -40,6 +40,35 @@ pub struct OllamaProvider {
 }
 
 impl OllamaProvider {
+    /// Read capabilities from the installed model rather than guessing from its name.
+    pub async fn supports_vision(
+        &self,
+        model: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, ProviderError> {
+        let task = async {
+            let response = self
+                .client
+                .post(self.endpoint("show"))
+                .timeout(Duration::from_secs(10))
+                .json(&serde_json::json!({"model": model}))
+                .send()
+                .await
+                .map_err(map_connection_error)?;
+            let metadata: serde_json::Value = ensure_success(response)
+                .await?
+                .json()
+                .await
+                .map_err(|error| ProviderError::InvalidResponse(error.to_string()))?;
+            Ok(vision_support(&metadata))
+        };
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(ProviderError::Cancelled),
+            result = task => result,
+        }
+    }
+
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, ProviderError> {
         let base_url = base_url.as_ref().trim().trim_end_matches('/').to_owned();
         let url = reqwest::Url::parse(&base_url).map_err(|error| {
@@ -429,6 +458,22 @@ fn tool_support(value: &serde_json::Value) -> Option<bool> {
         .map(|caps| caps.iter().any(|cap| cap.as_str() == Some("tools")))
 }
 
+fn vision_support(value: &serde_json::Value) -> bool {
+    if let Some(capabilities) = value
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+    {
+        return capabilities
+            .iter()
+            .any(|cap| cap.as_str() == Some("vision"));
+    }
+    // Older Ollama servers expose projector metadata without a capabilities list.
+    value
+        .get("projector_info")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|info| !info.is_empty())
+}
+
 fn map_connection_error(error: reqwest::Error) -> ProviderError {
     if error.is_connect() || error.is_timeout() {
         ProviderError::Unavailable(error.to_string())
@@ -774,12 +819,16 @@ mod tests {
                 }
                 let mut payload = vec![0; length];
                 reader.read_exact(&mut payload).unwrap();
-                if path.starts_with("POST") {
+                if path.starts_with("POST /api/chat") {
                     let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
                     assert_eq!(value["model"], "test");
                     assert_eq!(value["messages"], serde_json::json!([]));
                     assert_eq!(value["stream"], false);
                     assert_eq!(value["options"]["num_ctx"], super::CHAT_CONTEXT_TOKENS);
+                }
+                if path.starts_with("POST /api/show") {
+                    let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                    assert_eq!(value["model"], "test");
                 }
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
@@ -1035,6 +1084,128 @@ mod tests {
         assert_eq!(value["think"], false);
         assert_eq!(value["options"]["num_ctx"], 16_384);
         assert_eq!(value["messages"][0]["images"][0], "image-data");
+    }
+
+    #[test]
+    fn detects_vision_from_capabilities_and_legacy_projector_metadata() {
+        for (metadata, expected) in [
+            (
+                serde_json::json!({"capabilities":["completion","vision"]}),
+                true,
+            ),
+            (
+                serde_json::json!({"capabilities":["completion","tools"]}),
+                false,
+            ),
+            (
+                serde_json::json!({"projector_info":{"general.architecture":"clip"}}),
+                true,
+            ),
+            (
+                serde_json::json!({"capabilities":[],"projector_info":{"legacy":"value"}}),
+                false,
+            ),
+            (serde_json::json!({"projector_info":{}}), false),
+            (serde_json::json!({}), false),
+        ] {
+            assert_eq!(super::vision_support(&metadata), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_capture_capability_check_does_not_contact_ollama() {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let result = super::OllamaProvider::new("http://127.0.0.1:1")
+            .unwrap()
+            .supports_vision("test", &cancellation)
+            .await;
+        assert!(matches!(result, Err(super::ProviderError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn direct_vision_capture_does_not_invoke_the_configured_ocr_model() {
+        let (base, server) = preparation_server(vec![(
+            "POST /api/show",
+            "200 OK",
+            r#"{"capabilities":["completion","vision"]}"#,
+        )]);
+        let mut request = super::GenerationRequest {
+            model: "test".into(),
+            messages: Vec::new(),
+            thinking: false,
+        };
+        let image = crate::screen::CapturedImage {
+            png_base64: "image".into(),
+            original: std::sync::Arc::new(image::DynamicImage::new_rgb8(24, 24)),
+        };
+        let config = crate::settings::AppConfig {
+            ocr_engine: crate::settings::OcrEngine::Ollama,
+            ocr_model: "not-installed".into(),
+            ..Default::default()
+        };
+        crate::capture_input::prepare(
+            &super::OllamaProvider::new(base).unwrap(),
+            &mut request,
+            image,
+            &config,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "requires installed Windows English OCR language pack"]
+    async fn captured_text_routes_through_native_ocr_for_text_and_assisted_vision_models() {
+        for vision in [false, true] {
+            let metadata = if vision {
+                r#"{"capabilities":["vision"]}"#
+            } else {
+                r#"{"capabilities":["completion"]}"#
+            };
+            let (base, server) = preparation_server(vec![("POST /api/show", "200 OK", metadata)]);
+            let mut messages = crate::prompt::PromptBuilder::build(crate::prompt::PromptRequest {
+                selected_text: None,
+                has_image: true,
+                intent: crate::prompt::PromptIntent::QuickAction {
+                    action: crate::prompt::QuickAction::Explain,
+                },
+                context: None,
+            })
+            .unwrap();
+            messages[1].images = Some(vec!["image".into()]);
+            let mut request = super::GenerationRequest {
+                model: "test".into(),
+                messages,
+                thinking: false,
+            };
+            let image = crate::screen::CapturedImage {
+                png_base64: "image".into(),
+                original: std::sync::Arc::new(
+                    image::load_from_memory(include_bytes!("../../tests/fixtures/ocr.png"))
+                        .unwrap(),
+                ),
+            };
+            let config = crate::settings::AppConfig {
+                ocr_assistance: vision,
+                ..Default::default()
+            };
+            crate::capture_input::prepare(
+                &super::OllamaProvider::new(base).unwrap(),
+                &mut request,
+                image,
+                &config,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(request.messages[1].images.is_some(), vision);
+            assert!(request.messages[1].content.contains("Snippet OCR 12345"));
+            server.join().unwrap();
+        }
     }
 
     #[test]

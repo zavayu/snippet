@@ -39,14 +39,6 @@ fn default_capture_region_shortcut() -> String {
     "Ctrl+Shift+G".into()
 }
 
-fn default_read_screen_shortcut() -> String {
-    "Ctrl+Shift+O".into()
-}
-
-fn default_read_region_shortcut() -> String {
-    "Ctrl+Shift+T".into()
-}
-
 fn default_ocr_model() -> String {
     DEFAULT_OCR_MODEL.into()
 }
@@ -70,10 +62,6 @@ pub struct ShortcutConfig {
     pub capture_screen: String,
     #[serde(default = "default_capture_region_shortcut")]
     pub capture_region: String,
-    #[serde(default = "default_read_screen_shortcut")]
-    pub read_screen: String,
-    #[serde(default = "default_read_region_shortcut")]
-    pub read_region: String,
 }
 
 impl Default for ShortcutConfig {
@@ -85,14 +73,12 @@ impl Default for ShortcutConfig {
             refine: "Ctrl+Shift+R".into(),
             capture_screen: default_capture_screen_shortcut(),
             capture_region: default_capture_region_shortcut(),
-            read_screen: default_read_screen_shortcut(),
-            read_region: default_read_region_shortcut(),
         }
     }
 }
 
 impl ShortcutConfig {
-    pub fn bindings(&self) -> [(&str, &str); 8] {
+    pub fn bindings(&self) -> [(&str, &str); 6] {
         [
             ("Open popup", &self.open_popup),
             ("Summarize", &self.summarize),
@@ -100,8 +86,6 @@ impl ShortcutConfig {
             ("Refine", &self.refine),
             ("Capture screen", &self.capture_screen),
             ("Capture region", &self.capture_region),
-            ("Read screen", &self.read_screen),
-            ("Read region", &self.read_region),
         ]
     }
 
@@ -114,8 +98,6 @@ impl ShortcutConfig {
             ("Refine", &mut self.refine),
             ("Capture screen", &mut self.capture_screen),
             ("Capture region", &mut self.capture_region),
-            ("Read screen", &mut self.read_screen),
-            ("Read region", &mut self.read_region),
         ] {
             *value = value.trim().to_owned();
             if value.is_empty() {
@@ -156,7 +138,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub thinking: bool,
     #[serde(default)]
-    pub vision_enabled: bool,
+    pub ocr_assistance: bool,
     #[serde(default)]
     pub has_completed_onboarding: bool,
     #[serde(default = "default_automatic_updates")]
@@ -177,7 +159,7 @@ impl Default for AppConfig {
             ocr_num_predict: DEFAULT_OCR_NUM_PREDICT,
             ocr_num_ctx: DEFAULT_OCR_NUM_CTX,
             thinking: false,
-            vision_enabled: false,
+            ocr_assistance: false,
             has_completed_onboarding: false,
             automatic_updates: true,
             web_search_enabled: true,
@@ -380,7 +362,7 @@ mod tests {
         assert_eq!(config.ocr_num_predict, DEFAULT_OCR_NUM_PREDICT);
         assert_eq!(config.ocr_num_ctx, DEFAULT_OCR_NUM_CTX);
         assert!(!config.thinking);
-        assert!(!config.vision_enabled);
+        assert!(!config.ocr_assistance);
         assert!(!config.has_completed_onboarding);
     }
 
@@ -394,7 +376,7 @@ mod tests {
             ocr_num_predict: 1_024,
             ocr_num_ctx: 8_192,
             thinking: true,
-            vision_enabled: true,
+            ocr_assistance: false,
             has_completed_onboarding: true,
             automatic_updates: true,
             web_search_enabled: true,
@@ -409,7 +391,6 @@ mod tests {
         assert_eq!(config.ocr_num_predict, 1_024);
         assert_eq!(config.ocr_num_ctx, 8_192);
         assert!(config.thinking);
-        assert!(config.vision_enabled);
         assert!(config.has_completed_onboarding);
     }
 
@@ -423,7 +404,7 @@ mod tests {
             ocr_num_predict: DEFAULT_OCR_NUM_PREDICT,
             ocr_num_ctx: DEFAULT_OCR_NUM_CTX,
             thinking: false,
-            vision_enabled: false,
+            ocr_assistance: false,
             has_completed_onboarding: false,
             automatic_updates: true,
             web_search_enabled: true,
@@ -436,6 +417,29 @@ mod tests {
     }
 
     #[test]
+    fn migrates_legacy_capture_settings_without_the_manual_vision_gate() {
+        let config = serde_json::from_value::<AppConfig>(serde_json::json!({
+            "ollamaBaseUrl": "http://localhost:11434", "model": "test",
+            "visionEnabled": false, "ocrEngine": "ollama", "ocrModel": "custom-ocr",
+            "shortcuts": {
+                "openPopup":"Ctrl+Shift+Space", "summarize":"Ctrl+Shift+S",
+                "explain":"Ctrl+Shift+E", "refine":"Ctrl+Shift+R",
+                "captureRegion":"Alt+G", "readRegion":"Ctrl+Shift+T", "readScreen":"Ctrl+Shift+O"
+            }
+        }))
+        .unwrap()
+        .normalized()
+        .unwrap();
+        assert!(!config.ocr_assistance);
+        assert_eq!(config.ocr_model, "custom-ocr");
+        assert_eq!(config.shortcuts.capture_region, "Alt+G");
+        assert_eq!(config.shortcuts.bindings().len(), 6);
+        let saved = serde_json::to_value(config).unwrap();
+        assert!(saved.get("visionEnabled").is_none());
+        assert!(saved["shortcuts"].get("readRegion").is_none());
+    }
+
+    #[test]
     fn provides_the_default_shortcuts() {
         assert_eq!(ShortcutConfig::default().open_popup, "Ctrl+Shift+Space");
         assert_eq!(ShortcutConfig::default().summarize, "Ctrl+Shift+S");
@@ -443,8 +447,6 @@ mod tests {
         assert_eq!(ShortcutConfig::default().refine, "Ctrl+Shift+R");
         assert_eq!(ShortcutConfig::default().capture_screen, "Ctrl+Shift+I");
         assert_eq!(ShortcutConfig::default().capture_region, "Ctrl+Shift+G");
-        assert_eq!(ShortcutConfig::default().read_screen, "Ctrl+Shift+O");
-        assert_eq!(ShortcutConfig::default().read_region, "Ctrl+Shift+T");
     }
 
     #[test]
@@ -475,8 +477,6 @@ mod tests {
 
         assert_eq!(shortcuts.capture_screen, "Ctrl+Shift+I");
         assert_eq!(shortcuts.capture_region, "Ctrl+Shift+G");
-        assert_eq!(shortcuts.read_screen, "Ctrl+Shift+O");
-        assert_eq!(shortcuts.read_region, "Ctrl+Shift+T");
     }
 
     #[test]

@@ -27,6 +27,33 @@ body {
   will-change: opacity;
 }
 
+.attachment-popover {
+  position: fixed;
+  z-index: 50;
+  top: 24px;
+  left: 24px;
+  visibility: hidden;
+}
+
+.attachment-menu {
+  max-width: calc(100vw - 48px);
+  max-height: var(--attachment-menu-max-height, 852px);
+  overflow-y: auto;
+  box-shadow:
+    0 0 10px 2px rgb(0 0 0 / 35%),
+    0 8px 24px -4px rgb(0 0 0 / 65%);
+}
+
+.popup-surface--settings {
+  display: flex;
+  flex-direction: column;
+  max-height: max(0px, calc(var(--popup-max-height, 900px) - 48px));
+}
+
+.popup-surface--settings > header {
+  flex-shrink: 0;
+}
+
 .initial-prompt {
   scrollbar-width: none;
 }

@@ -119,7 +119,9 @@ fn region_is_valid(region: NormalizedRegion) -> bool {
         && region.y + region.height <= 1.0
 }
 
-fn encode_image(image: DynamicImage) -> Result<(CapturedImage, ImagePreview), ScreenCaptureError> {
+pub(crate) fn encode_image(
+    image: DynamicImage,
+) -> Result<(CapturedImage, ImagePreview), ScreenCaptureError> {
     let original = Arc::new(image);
     let image = resize_if_needed((*original).clone());
     let (width, height) = (image.width(), image.height());

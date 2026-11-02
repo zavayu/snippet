@@ -79,6 +79,7 @@ export function generationLabel(turn?: ChatTurn): string {
   if (turn?.status === "streaming") return "Responding...";
   if (turn?.loadingModel) return "Loading model...";
   switch (turn?.research?.phase) {
+    case "reading-capture": return "Reading capture...";
     case "planning": return "Preparing search...";
     case "searching": return "Searching...";
     case "reading": return "Reading webpage...";

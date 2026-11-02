@@ -82,6 +82,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
   const panel = useRef<HTMLElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
+  const composerContext = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const lastTurnId = useRef<number | undefined>(undefined);
   const last = conversation.turns[conversation.turns.length - 1];
@@ -108,12 +109,24 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
     textarea.style.height = `${height}px`;
     textarea.style.overflowY = textarea.scrollHeight > height ? "auto" : "hidden";
     // Trade transcript space for composer space without moving its bottom edge.
-    panel.current?.style.setProperty("--composer-growth", `${height - 32}px`);
+    panel.current?.style.setProperty("--composer-growth", `${height - 32 + (composerContext.current?.getBoundingClientRect().height ?? 0)}px`);
     if (transcript.current && followBottom.current) {
       transcript.current.scrollTop = transcript.current.scrollHeight;
     }
     onLayoutChange?.();
   }, [draft, conversation.expanded]);
+
+  useLayoutEffect(() => {
+    const context = composerContext.current;
+    if (!context) return;
+    const observer = new ResizeObserver(() => {
+      const growth = Math.max(0, (input.current?.getBoundingClientRect().height ?? 32) - 32);
+      panel.current?.style.setProperty("--composer-growth", `${growth + context.getBoundingClientRect().height}px`);
+      onLayoutChange?.();
+    });
+    observer.observe(context);
+    return () => observer.disconnect();
+  }, [conversation.expanded]);
 
   const submit = () => {
     if (!draft.trim() || busy || submissionBlocked || !hasCompletedTurn) return;
@@ -178,7 +191,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
 
     {replaceError && <p role="alert" className="mt-2 text-xs text-amber-200">{replaceError}</p>}
 
-    {composerAttachments}
+    <div ref={composerContext} className="flow-root">{composerAttachments}</div>
     {conversation.expanded && <form className="mt-2 flex items-end gap-2 rounded-xl border border-zinc-700 bg-zinc-950/50 p-2"
       onSubmit={(event) => { event.preventDefault(); submit(); }}>
       {composerAction && <div className="shrink-0 self-end">{composerAction}</div>}
