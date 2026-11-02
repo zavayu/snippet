@@ -53,6 +53,13 @@ model. Node.js and Rust are needed only when building from source.
 The default Ollama address is `http://localhost:11434`. You can change it and the
 selected model in Settings. Image support is detected automatically.
 
+Customize **Settings > Appearance** with light, dark, or system mode, an accent
+color, separate light/dark background and text colors, fonts, text sizes, and
+reduced motion. Adjust the window width and maximum chat/settings heights in the
+Window size group. Colors and fonts preview immediately; window sizes apply when
+you click **Save**. System
+mode follows Windows appearance changes automatically.
+
 Snippet runs from the system tray. **Esc** and the popup's close button hide it;
 **Quit Snippet** in the tray menu exits the app.
 

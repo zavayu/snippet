@@ -88,7 +88,7 @@ function AttachmentList({ files, disabled, error, onRemove }: {
         </button>
       </div>)}
     </div>
-    {error && <p role="alert" className="mt-1 text-xs text-amber-200">{error}</p>}
+    {error && <p role="alert" className="mt-1 text-xs text-warning">{error}</p>}
   </div>;
 }
 

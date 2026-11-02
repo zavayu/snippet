@@ -66,12 +66,12 @@ export function RequestInspector({ onLayoutChange }: { onLayoutChange: () => voi
         <div className="preview-scroll max-h-64 space-y-2 overflow-y-auto">
           {[...state.requests].reverse().map((request) => <details key={request.id} onToggle={() => layoutCallback.current()} className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-2">
             <summary className="cursor-pointer break-words text-[10px]">#{request.id} · {request.stage} · {request.capturedAt}</summary>
-            {request.note && <p className="mt-2 text-amber-200">{request.note}</p>}
+            {request.note && <p className="mt-2 text-warning">{request.note}</p>}
             <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-[10px] leading-4">{JSON.stringify(request.body, null, 2)}</pre>
           </details>)}
         </div>
       </div>}
-      {error && <p role="alert" className="mt-2 text-amber-200">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-warning">{error}</p>}
     </section>
   );
 }

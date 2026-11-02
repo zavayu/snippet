@@ -2,41 +2,54 @@
 
 ## Unreleased
 
-- Unify screen and region capture: send images directly to vision models and
-  automatically extract text for other models, using installed-model capabilities.
+### Added
+
+- Add Appearance settings with light, dark, and system modes; custom accent and
+  per-mode background/text colors; interface, response, and code typography; and
+  system-aware reduced motion. Add window width and separate chat/settings height
+  limits that fit the monitor work area and apply on Save so sliders stay in place.
+  Preview colors and fonts immediately and save preferences.
+
 - Add optional OCR assistance for vision models and move separate OCR model
   configuration into advanced Screen capture settings. Remove the manual image
   input toggle and separate Read screen/Read region actions and shortcuts.
-- Keep capture preprocessing cancellable, preserve processed context in successful
-  follow-ups, and make expanded settings scroll instead of clipping controls.
-
 - Add one-time window screenshot attachments to initial prompts and follow-ups,
   with a searchable window picker, expandable previews, and removal before sending.
-- Capture covered windows directly and briefly restore minimized windows without
-  activation where supported, returning them to their previous state after capture.
 - Expand the plus button into a file/window context menu, displayed as a borderless
   floating popover with icons, a matching background, and an overlapping shadow.
-- Hide attachment previews after sending and reserve composer space for pending
-  context without cutting off the conversation.
-- Show native app icons in the window picker, falling back to executable icons
-  or a generic window icon when unavailable.
-
 - Add text/Markdown/source file attachments with an explicit picker, removable
   file chips, and a `read_attached_file` tool for bounded line-range reads.
-- Retain in-memory snapshots across follow-ups and retries, clear them on reset,
-  and allow file reading independently of web search.
-
 - Add `read_webpage` for direct URL reading and inspecting search results, with
   main-content Markdown extraction, citations, and a "Reading webpage" status.
+
+### Improved
+
+- Unify screen and region capture: send images directly to vision models and
+  automatically extract text for other models, using installed-model capabilities.
+- Capture covered windows directly and briefly restore minimized windows without
+  activation where supported, returning them to their previous state after capture.
+- Show native app icons in the window picker, falling back to executable icons
+  or a generic window icon when unavailable.
+- Retain in-memory snapshots across follow-ups and retries, clear them on reset,
+  and allow file reading independently of web search.
 - Bound page downloads, redirects, extracted content, and tool calls; report
   partial results and unsupported pages, and block local/private-network targets.
-
 - Replace separate web-search planning with native Ollama tool calls and a bounded
   search loop, retaining citations and successful tool history for follow-ups.
 - Check installed-model tool support; keep ordinary chat available with a notice
   for unsupported models and require tool support for explicit Research.
 - Limit searches to three per turn, reject repeated or invalid tool requests,
   and support cancellation and a five-minute request deadline.
+
+### Fixed
+
+- Use darker warning and error text in light mode across captures, attachments,
+  conversations, settings, updates, and math rendering errors.
+
+- Keep capture preprocessing cancellable, preserve processed context in successful
+  follow-ups, and make expanded settings scroll instead of clipping controls.
+- Hide attachment previews after sending and reserve composer space for pending
+  context without cutting off the conversation.
 
 ## 0.6.1
 

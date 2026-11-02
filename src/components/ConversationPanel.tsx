@@ -162,7 +162,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
           </details>}
         {conversation.expanded && turn.status === "loading" && <p className="text-xs text-zinc-500">{generationLabel(turn)}</p>}
         {turn.status === "stopped" && <p className="mt-2 text-xs text-zinc-500">Response stopped. This turn is not included in follow-up context.</p>}
-        {turn.status === "error" && <p role="alert" className="mt-2 text-xs text-amber-200">{turn.error}{turn.response && " This incomplete turn is not included in follow-up context."}</p>}
+        {turn.status === "error" && <p role="alert" className="mt-2 text-xs text-warning">{turn.error}{turn.response && " This incomplete turn is not included in follow-up context."}</p>}
         {conversation.expanded && turn.response && !isTurnActive(turn) && <div className="flex items-center gap-1">
           <CopyResponse text={responseWithSources(turn.response, turn.research?.sources)} />
           {!busy && turn.status === "complete" && replaceAction(responseWithSources(turn.response, turn.research?.sources))}
@@ -189,7 +189,7 @@ export function ConversationPanel({ conversation, onContinue, onNewConversation,
       </ResponseAction>}
     </div>}
 
-    {replaceError && <p role="alert" className="mt-2 text-xs text-amber-200">{replaceError}</p>}
+    {replaceError && <p role="alert" className="mt-2 text-xs text-warning">{replaceError}</p>}
 
     <div ref={composerContext} className="flow-root">{composerAttachments}</div>
     {conversation.expanded && <form className="mt-2 flex items-end gap-2 rounded-xl border border-zinc-700 bg-zinc-950/50 p-2"

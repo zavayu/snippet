@@ -125,7 +125,7 @@ export function AttachmentPicker({ conversationId, filesDisabled, onFile, onCapt
       </div>
       {capturing && <p role="status" className="mt-2 px-1 text-xs text-violet-300">Capturing window…</p>}
     </>}
-    {error && <p role="alert" className="mt-2 break-words px-1 text-xs text-amber-200">{error}</p>}
+    {error && <p role="alert" className="mt-2 break-words px-1 text-xs text-warning">{error}</p>}
   </div>;
 }
 

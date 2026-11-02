@@ -13,6 +13,9 @@ import {
   PhysicalPosition,
 } from "@tauri-apps/api/window";
 import "./App.css";
+import { DEFAULT_APPEARANCE, popupLimits, type Appearance } from "./appearance";
+import { useAppearance } from "./useAppearance";
+import { AppearanceSettings } from "./components/AppearanceSettings";
 import { SHOW_DEVELOPMENT_TOOLS } from "./config";
 import { RequestInspector } from "./components/RequestInspector";
 import { UpdatesPanel } from "./components/UpdatesPanel";
@@ -25,10 +28,7 @@ import { ConversationPanel } from "./components/ConversationPanel";
 import { handlePromptKeyDown } from "./promptKeyboard";
 import { popupPosition, type SelectionBounds } from "./popupPosition";
 
-const POPUP_WIDTH = 510;
 const POPUP_MIN_HEIGHT = 112;
-const POPUP_MAX_HEIGHT = 900;
-const SETTINGS_MAX_HEIGHT = 680;
 const POPUP_SHADOW_MARGIN = 24;
 
 type CaptureState = "waiting" | "captured" | "error";
@@ -101,6 +101,7 @@ type AppConfig = {
   automaticUpdates: boolean;
   webSearchEnabled: boolean;
   shortcuts: ShortcutConfig;
+  appearance: Appearance;
 };
 
 type SettingsSnapshot = {
@@ -132,7 +133,7 @@ type GenerationFailure = GenerationEvent & {
   message: string;
 };
 
-type SettingsPage = "general" | "context" | "shortcuts";
+type SettingsPage = "general" | "appearance" | "context" | "shortcuts";
 type ShortcutKey = keyof ShortcutConfig;
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
@@ -212,6 +213,9 @@ function App() {
   const [settingsDraft, setSettingsDraft] = useState<AppConfig | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const savedAppearance = settings?.config.appearance ?? DEFAULT_APPEARANCE;
+  const activeAppearance = (isSettingsOpen ? settingsDraft?.appearance : savedAppearance) ?? DEFAULT_APPEARANCE;
+  const appearanceMode = useAppearance(activeAppearance);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [onboardingStartAtLogin, setOnboardingStartAtLogin] = useState(true);
   const [searchKeyDraft, setSearchKeyDraft] = useState("");
@@ -387,7 +391,11 @@ function App() {
     setIsSettingsLoading(true);
     try {
       const [snapshot, status] = await Promise.all([
-        invoke<SettingsSnapshot>("get_settings"),
+        invoke<SettingsSnapshot>("get_settings").then((snapshot) => {
+          setSettings(snapshot);
+          setSettingsDraft(snapshot.config);
+          return snapshot;
+        }),
         invoke<ProviderStatus>("get_provider_status"),
       ]);
       setSettings(snapshot);
@@ -544,11 +552,17 @@ function App() {
         if (cancelled) {
           return;
         }
-        const heightLimit = isSettingsOpen ? SETTINGS_MAX_HEIGHT : POPUP_MAX_HEIGHT;
-        const maxHeight = monitor
-          ? Math.min(heightLimit, Math.max(POPUP_MIN_HEIGHT, monitor.workArea.size.height / monitor.scaleFactor - 16))
-          : heightLimit;
-        popupContentRef.current?.style.setProperty("--popup-max-height", `${maxHeight}px`);
+        const { width: popupWidth, height: maxHeight } = popupLimits(savedAppearance, isSettingsOpen, monitor ? {
+          width: monitor.workArea.size.width / monitor.scaleFactor,
+          height: monitor.workArea.size.height / monitor.scaleFactor,
+        } : undefined);
+        const surface = popupContentRef.current;
+        if (surface) {
+          surface.style.width = `${popupWidth - POPUP_SHADOW_MARGIN * 2}px`;
+          surface.style.setProperty("--popup-max-height", `${maxHeight}px`);
+          surface.style.setProperty("--chat-preview-height", `${320 * savedAppearance.chatMaxHeight / 900}px`);
+          surface.style.setProperty("--chat-expanded-height", `${448 * savedAppearance.chatMaxHeight / 900}px`);
+        }
         const contentRect = popupContentRef.current?.getBoundingClientRect();
         const contentHeight = contentRect?.height ?? POPUP_MIN_HEIGHT;
         let bottom = (contentRect?.top ?? POPUP_SHADOW_MARGIN) + contentHeight;
@@ -562,14 +576,14 @@ function App() {
             ? composerTop - menu.height + 8
             : bottom - 8;
           const top = Math.max(POPUP_SHADOW_MARGIN, Math.min(preferredTop, maxHeight - menu.height - POPUP_SHADOW_MARGIN));
-          const left = Math.max(POPUP_SHADOW_MARGIN, Math.min((contentRect?.left ?? POPUP_SHADOW_MARGIN) + 8, POPUP_WIDTH - menu.width - POPUP_SHADOW_MARGIN));
+          const left = Math.max(POPUP_SHADOW_MARGIN, Math.min((contentRect?.left ?? POPUP_SHADOW_MARGIN) + 8, popupWidth - menu.width - POPUP_SHADOW_MARGIN));
           popover.style.top = `${top}px`;
           popover.style.left = `${left}px`;
           bottom = Math.max(bottom, top + menu.height);
         }
         const desiredHeight = Math.max(Math.ceil(bottom) + POPUP_SHADOW_MARGIN, POPUP_MIN_HEIGHT);
         const nextHeight = Math.min(desiredHeight, maxHeight);
-        await popupWindow.setSize(new LogicalSize(POPUP_WIDTH, nextHeight));
+        await popupWindow.setSize(new LogicalSize(popupWidth, nextHeight));
 
         if (cancelled || popupSelectionBoundsRef.current !== selectionBounds
           || (positionRequest && popupPositionRequestRef.current !== positionRequest)) {
@@ -644,6 +658,9 @@ function App() {
     isSettingsLoading,
     settingsPage,
     settingsDraft?.ocrEngine,
+    activeAppearance,
+    savedAppearance,
+    appearanceMode,
     settings?.hasSearchApiKey,
     promptPreview,
     promptPreviewError,
@@ -876,7 +893,7 @@ function App() {
 
   return (
     <main className="min-h-screen overflow-clip p-6 text-zinc-100">
-      <section className="mx-auto w-full max-w-xl">
+      <section className="mx-auto w-full">
         <div
           ref={popupContentRef}
           className={`popup-surface ${isSettingsOpen ? "popup-surface--settings" : ""} ${isPopupSurfaceVisible ? "popup-surface--enter" : "popup-surface--hidden"} rounded-[28px] bg-zinc-900 p-4 shadow-lg shadow-black/50`}
@@ -1044,9 +1061,10 @@ function App() {
 
           {isSettingsOpen && (
             <section className="settings-panel flex min-h-0 flex-col">
-              <div className="mb-3 flex shrink-0 gap-1 rounded-lg bg-zinc-950/50 p-1">
+              <div className="mb-3 flex shrink-0 gap-1 rounded-lg bg-zinc-800 p-1">
                 {([
                   ["general", "General"],
+                  ["appearance", "Appearance"],
                   ["context", "Context"],
                   ["shortcuts", "Shortcuts"],
                 ] as const).map(([page, label]) => (
@@ -1125,7 +1143,7 @@ function App() {
                     </div>
                   </details>
                 </SettingsGroup>
-                {autostartError && <p className="mt-2 text-xs text-rose-300">{autostartError}</p>}
+                {autostartError && <p className="mt-2 text-xs text-error">{autostartError}</p>}
                 {settings?.modelSource === "environment" && <p className="settings-help mt-2">Model set by SNIPPET_OLLAMA_MODEL.</p>}
                 {providerStatus && <p className="settings-help mt-2">
                   {providerStatus.state === "ready" && "Connected to Ollama."}
@@ -1134,6 +1152,9 @@ function App() {
                   {providerStatus.state === "modelMissing" && `${providerStatus.model} is not installed.`}
                 </p>}
               </>}
+
+              {settingsPage === "appearance" && <AppearanceSettings value={activeAppearance} mode={appearanceMode}
+                onChange={(appearance) => setSettingsDraft((draft) => draft && ({ ...draft, appearance }))} />}
 
               {settingsPage === "context" && <>
                 <SettingsGroup title="Web search">
@@ -1209,7 +1230,7 @@ function App() {
                   </div>
                 </SettingsRow>)}
               </SettingsGroup>}
-              {settingsError && <p className="mt-3 text-xs leading-5 text-amber-200">{settingsError}</p>}
+              {settingsError && <p className="mt-3 text-xs leading-5 text-warning">{settingsError}</p>}
 
               </div>
               <div className="mt-3 flex shrink-0 items-center justify-between gap-3 border-t border-zinc-800 pt-3">
@@ -1218,7 +1239,7 @@ function App() {
                 </span>
                 <button
                   type="button"
-                  className="rounded-full bg-zinc-100 px-4 py-1.5 text-xs font-medium text-zinc-950 transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
+                  className="rounded-full bg-violet-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-violet-400 disabled:cursor-wait disabled:opacity-60"
                   disabled={!settingsDraft || isSettingsLoading}
                   onClick={() => void saveSettings()}
                 >
@@ -1357,7 +1378,7 @@ function App() {
           )}
 
           {!isSettingsOpen && captureState === "error" && (
-            <p className="mt-3 text-xs leading-5 text-amber-200">{errorMessage}</p>
+            <p className="mt-3 text-xs leading-5 text-warning">{errorMessage}</p>
           )}
         </div>
         {!isSettingsOpen && isAttachmentPickerOpen && <div ref={attachmentPopoverRef} className="attachment-popover">{attachmentPicker}</div>}

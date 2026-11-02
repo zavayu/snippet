@@ -38,7 +38,7 @@ export function UpdatesPanel({ update, automatic, onAutomaticChange, busy }: Pro
           <div className="preview-scroll max-h-40 overflow-y-auto text-zinc-400"><MarkdownResponse content={update.notes} /></div>
         </div>
       )}
-      {update.error && <p role="alert" className="text-amber-200">{update.error}</p>}
+      {update.error && <p role="alert" className="text-warning">{update.error}</p>}
       {busy && update.phase === "downloaded" && <p className="text-zinc-500">Finish the current request before installing.</p>}
       <div className="flex flex-wrap gap-2">
         {update.phase === "available" && <button type="button" className={buttonStyle} onClick={() => void updateController.download()}>Download update</button>}

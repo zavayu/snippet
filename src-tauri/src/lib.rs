@@ -1,4 +1,5 @@
 pub mod agent;
+mod appearance;
 pub mod attachments;
 mod capture_input;
 mod conversation;

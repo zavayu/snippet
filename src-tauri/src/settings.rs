@@ -147,6 +147,8 @@ pub struct AppConfig {
     pub web_search_enabled: bool,
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
+    #[serde(default)]
+    pub appearance: crate::appearance::Appearance,
 }
 
 impl Default for AppConfig {
@@ -164,6 +166,7 @@ impl Default for AppConfig {
             automatic_updates: true,
             web_search_enabled: true,
             shortcuts: ShortcutConfig::default(),
+            appearance: crate::appearance::Appearance::default(),
         }
     }
 }
@@ -195,6 +198,10 @@ impl AppConfig {
             return Err(SettingsError::InvalidOcrNumCtx);
         }
         self.shortcuts = self.shortcuts.normalized()?;
+        self.appearance = self
+            .appearance
+            .normalized()
+            .map_err(SettingsError::InvalidAppearance)?;
         Ok(self)
     }
 }
@@ -299,6 +306,7 @@ fn snapshot_for(config: AppConfig) -> SettingsSnapshot {
 #[derive(Debug)]
 pub enum SettingsError {
     InvalidBaseUrl,
+    InvalidAppearance(String),
     InvalidOcrModel,
     InvalidOcrNumPredict,
     InvalidOcrNumCtx,
@@ -311,6 +319,7 @@ pub enum SettingsError {
 impl SettingsError {
     pub fn user_message(&self) -> String {
         match self {
+            Self::InvalidAppearance(message) => message.clone(),
             Self::InvalidBaseUrl => "Enter a valid http:// or https:// Ollama address.".into(),
             Self::InvalidOcrModel => "Choose an OCR model before using Read screen.".into(),
             Self::InvalidOcrNumPredict => format!(
@@ -381,6 +390,7 @@ mod tests {
             automatic_updates: true,
             web_search_enabled: true,
             shortcuts: ShortcutConfig::default(),
+            appearance: crate::appearance::Appearance::default(),
         }
         .normalized()
         .unwrap();
@@ -409,6 +419,7 @@ mod tests {
             automatic_updates: true,
             web_search_enabled: true,
             shortcuts: ShortcutConfig::default(),
+            appearance: crate::appearance::Appearance::default(),
         }
         .normalized()
         .unwrap_err();
