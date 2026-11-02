@@ -22,11 +22,12 @@ a section, refine a draft, or keep the conversation going without switching apps
 
 - **Ask about selected text.** Use Explain, Summarize, Refine, or your own prompt
   across browsers, editors, and other desktop apps.
-- **Read text from the screen.** Extract a region or an entire monitor with
-  Windows OCR, or choose an Ollama OCR model for richer document formatting.
-- **Ask about an image.** Attach a screenshot to a vision-capable Ollama model.
+- **Ask about your screen.** Capture a region or an entire monitor. Snippet sends
+  the image to vision models and extracts text automatically for other models.
 - **Research a topic.** Search the web with You.com, then get an Ollama summary
   with clickable citations and sources.
+- **Attach a window.** Use the plus menu to capture an open window once, including
+  minimized windows, and ask about it alongside your other context.
 - **Ask about files.** Attach text, Markdown, or source files and compare them
   with selected text, ask questions, or request a summary using a tool-capable model.
 - **Continue the conversation.** Ask follow-up questions with the original
@@ -50,7 +51,7 @@ model. Node.js and Rust are needed only when building from source.
 5. Choose a quick action or type an instruction.
 
 The default Ollama address is `http://localhost:11434`. You can change it and the
-selected model in Settings. Enable image input only for a model that supports it.
+selected model in Settings. Image support is detected automatically.
 
 Snippet runs from the system tray. **Esc** and the popup's close button hide it;
 **Quit Snippet** in the tray menu exits the app.
@@ -63,45 +64,50 @@ Snippet runs from the system tray. **Esc** and the popup's close button hide it;
 | Summarize selected text | `Ctrl + Shift + S` |
 | Explain selected text | `Ctrl + Shift + E` |
 | Refine selected text | `Ctrl + Shift + R` |
-| Attach a screen image | `Ctrl + Shift + I` |
-| Attach a region image | `Ctrl + Shift + G` |
-| Read screen text with OCR | `Ctrl + Shift + O` |
-| Read region text with OCR | `Ctrl + Shift + T` |
+| Capture screen | `Ctrl + Shift + I` |
+| Capture region | `Ctrl + Shift + G` |
 
 Change shortcuts in **Settings > Shortcuts** by clicking a binding and pressing
 a new key combination. Clear a binding to disable that shortcut.
 
-## Screen reading and image input
+## Screen capture
 
-**Read screen** and **Read region** extract text and attach it as reference
-material. If you choose an action while OCR is running, Snippet waits for the
-text before sending your request.
+Capture a region with **Ctrl + Shift + G**, or the current monitor with
+**Ctrl + Shift + I**, then choose Explain, Summarize, or type a question.
+The capture stays attached until you send your prompt or remove it.
 
-Choose an engine under **Settings > Read screen > OCR engine**:
+Snippet checks the installed chat model's capabilities when you send:
 
-| Engine | Best suited to | Requirements |
-| --- | --- | --- |
-| **Windows OCR** (default) | Fast extraction of ordinary screen text | An installed Windows OCR language pack |
-| **Ollama** | Model-based extraction of Markdown, tables, code, and formulas | Ollama and an OCR-capable model |
+- **Vision models** receive the image directly.
+- **Text-only models** receive extracted text using Windows OCR by default.
+- Enable **Settings > Screen capture > Assist image reading with OCR** to send
+  extracted text alongside images for vision models that struggle with text.
 
-Windows OCR runs locally without Ollama and uses your installed recognition
-languages, preferring your Windows language settings. If a language pack is
-missing, install its OCR support in **Windows Settings > Time & language >
-Language & region**. Chat responses still use the selected Ollama chat model.
+OCR runs only when needed, as part of your request. Follow-up questions retain
+its text or image context. If a text-only model's capture contains no readable
+text, Snippet asks you to recapture or choose a vision model.
 
-The Ollama OCR model defaults to `glm-ocr:latest`:
+Windows OCR runs locally and uses installed Windows recognition languages.
+Install missing OCR language support under **Windows Settings > Time & language >
+Language & region**. Under **Advanced text extraction**, you can optionally use a
+separate Ollama OCR model and adjust its output and context limits. These settings
+are preserved from earlier versions. The former separate Read screen and Read
+region shortcuts have been removed; use the capture shortcuts for both workflows.
 
-```powershell
-ollama pull glm-ocr:latest
-```
+## Window attachments
 
-Model selection and output/context limits appear when Ollama OCR is selected.
-Switching engines preserves those settings. Recognition quality and model speed
-depend on the capture, model, and hardware.
+Click **+ > Add window**, then search or select an open window. Snippet attaches
+one screenshot, with a thumbnail you can click to inspect and an **×** to remove
+it before sending. The same menu offers **Add file**.
 
-**Attach screen/region image** sends the image itself to your chat model instead
-of extracting text first. Enable image input in Settings and select a model with
-vision support to use this workflow.
+Minimized windows briefly restore for capture and then return to their minimized
+state. Only the selected window is captured, including when another window
+covers it. Protected or unresponsive windows may not be capturable.
+
+You can attach a window to the initial prompt or a follow-up. One pending image
+is supported at a time; choosing another replaces it. Sending removes its preview
+from the composer, and successful turns retain its image or extracted text in
+conversation history. Attachments are snapshots and do not update automatically.
 
 ## Web research
 
@@ -126,7 +132,7 @@ stopped turns do not enter conversation history.
 
 Web search is **enabled by default**. Disable it in **Settings > Web search** and
 save your settings to hide Research and block both searching and webpage reading.
-Research uses text; read a screenshot with OCR first or type a question.
+You can also capture a region and ask Snippet to research what it contains.
 
 Select a URL and ask "Summarize this page" to read it directly without a search.
 Snippet extracts the main content as Markdown, preserving headings, lists, links,

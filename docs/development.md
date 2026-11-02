@@ -41,6 +41,8 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 | `src-tauri/src/webpage.rs` | Public HTML retrieval, redirect/DNS validation, and main-content extraction |
 | `src-tauri/src/research.rs` | You.com retrieval, source normalization, and research grounding |
 | `src-tauri/src/search_credentials.rs` | Windows Credential Manager API key storage |
+| `src-tauri/src/capture_input.rs` | Model capability routing and optional OCR assistance |
+| `src-tauri/src/window_capture.rs` | Window enumeration, one-shot capture, and minimized-window restoration |
 | `src-tauri/src/ocr.rs` | Native Windows OCR |
 | `src-tauri/src/prompt.rs` | Provider-neutral prompt construction |
 | `src-tauri/prompts/` and `src-tauri/src/prompt/templates.rs` | Bundled instruction templates and literal substitution |
@@ -53,6 +55,15 @@ with `cargo test --manifest-path src-tauri/Cargo.toml recognizes_known_text -- -
 Keep capture, prompt construction, and inference separate. Native OCR receives
 original capture pixels; images encoded for Ollama are limited to a 1,920-pixel
 edge. Region capture crops before resizing.
+
+Screen and region capture share one workflow. On the initial request,
+`capture_input` reads `/api/show` capabilities (or legacy projector metadata).
+Vision models receive the image; other models receive OCR text. `ocrAssistance`
+adds OCR text for vision models too. Windows OCR is the default, with a separate
+Ollama OCR model available under advanced settings. Preprocessing shares the
+turn's cancellation token and deadline, and successful history retains the
+processed reference. Legacy `visionEnabled`, `readScreen`, and `readRegion`
+settings are ignored.
 
 ## Web tool execution
 
@@ -135,7 +146,7 @@ The UI manages this file. Relevant settings include:
   "ocrNumCtx": 16384,
   "webSearchEnabled": true,
   "thinking": false,
-  "visionEnabled": false
+  "ocrAssistance": false
 }
 ```
 
@@ -264,3 +275,21 @@ it needs network access and consumes a free search:
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml live_free_search_smoke -- --ignored
 ```
+
+## Window attachments
+
+`list_context_windows` enumerates titled application windows, excluding Snippet.
+`capture_context_window` rechecks window ID and PID, reserves capture against
+updates and other captures, and rejects results belonging to a replaced or busy
+conversation. Images remain in the existing in-memory capture store. Both initial
+and follow-up turns can attach the pending screenshot.
+
+Xcap's `wgc` feature uses Windows Graphics Capture for windows and monitors,
+with a three-second frame timeout. Minimized windows temporarily restore without
+activation where supported. A guard restores their prior bounds and minimized
+state on success or failure. Capture stays on a worker thread. No automatic
+refresh, persistent capture session, or background screenshot polling is added.
+
+Window list icons are read from the window/class icon, falling back to the app's
+executable icon. Icon requests have a short timeout; copied icon and GDI resources
+are released after PNG encoding. The picker uses a generic glyph if no icon is available.

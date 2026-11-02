@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Unify screen and region capture: send images directly to vision models and
+  automatically extract text for other models, using installed-model capabilities.
+- Add optional OCR assistance for vision models and move separate OCR model
+  configuration into advanced Screen capture settings. Remove the manual image
+  input toggle and separate Read screen/Read region actions and shortcuts.
+- Keep capture preprocessing cancellable, preserve processed context in successful
+  follow-ups, and make expanded settings scroll instead of clipping controls.
+
+- Add one-time window screenshot attachments to initial prompts and follow-ups,
+  with a searchable window picker, expandable previews, and removal before sending.
+- Capture covered windows directly and briefly restore minimized windows without
+  activation where supported, returning them to their previous state after capture.
+- Expand the plus button into a file/window context menu, displayed as a borderless
+  floating popover with icons, a matching background, and an overlapping shadow.
+- Hide attachment previews after sending and reserve composer space for pending
+  context without cutting off the conversation.
+- Show native app icons in the window picker, falling back to executable icons
+  or a generic window icon when unavailable.
+
 - Add text/Markdown/source file attachments with an explicit picker, removable
   file chips, and a `read_attached_file` tool for bounded line-range reads.
 - Retain in-memory snapshots across follow-ups and retries, clear them on reset,
