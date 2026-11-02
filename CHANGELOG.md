@@ -4,6 +4,10 @@
 
 ### Added
 
+- Add local syntax highlighting for common code languages in responses, with
+  language headers and a copy icon below each code block. Adapt highlight colors
+  to light, dark, and custom code backgrounds for readable contrast.
+
 - Add Appearance settings with light, dark, and system modes; custom accent and
   per-mode background/text colors; interface, response, and code typography; and
   system-aware reduced motion. Add window width and separate chat/settings height

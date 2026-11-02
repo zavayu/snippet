@@ -1,3 +1,4 @@
+import { CodeBlock } from "./CodeBlock";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -20,6 +21,14 @@ export function MarkdownResponse({ content, sources }: MarkdownResponseProps) {
         rehypePlugins={[[rehypeKatex, { trust: false, strict: "ignore", errorColor: "#fcd34d" }]]}
         skipHtml
         components={{
+          pre: ({ node, children }) => {
+            const code = node?.children.find((child) => child.type === "element" && child.tagName === "code");
+            if (!code || code.type !== "element") return <pre>{children}</pre>;
+            const classes = code.properties.className;
+            const language = (Array.isArray(classes) ? classes : []).map(String).find((name) => name.startsWith("language-"))?.slice(9) ?? "";
+            const text = code.children.map((child) => child.type === "text" ? child.value : "").join("");
+            return <CodeBlock code={text} language={language} />;
+          },
           a: ({ href, children }) => href && (!sources || allowed.has(href))
             ? <WebLink href={href}>{children}</WebLink> : <span>{children}</span>,
           // Research evidence can supply links, never remote image loads.

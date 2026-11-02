@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from "react";
+import { syntaxVariables } from "./syntaxTheme";
 import { appearanceVariables, resolveMode, type Appearance } from "./appearance";
 
 export function useAppearance(value: Appearance) {
@@ -19,7 +20,9 @@ export function useAppearance(value: Appearance) {
     root.dataset.theme = mode;
     root.dataset.reduceMotion = String(value.reduceMotion === "system" ? systemMotion : value.reduceMotion === "on");
     root.style.colorScheme = mode;
-    for (const [key, entry] of Object.entries(appearanceVariables(value, mode))) root.style.setProperty(key, entry);
+    const variables = appearanceVariables(value, mode);
+    Object.assign(variables, syntaxVariables(mode, variables["--color-zinc-950"]));
+    for (const [key, entry] of Object.entries(variables)) root.style.setProperty(key, entry);
   }, [value, mode, systemMotion]);
   return mode;
 }

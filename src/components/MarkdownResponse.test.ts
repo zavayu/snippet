@@ -68,3 +68,27 @@ $\includegraphics{https://untrusted.example/pixel.png}$`);
     expect(html).not.toContain("<img");
   });
 });
+
+describe("response code blocks", () => {
+  it("shows the language above highlighted code and a copy icon below it", () => {
+    const html = render('```python\nprint("Hello")\n```');
+    expect(html).toContain('response-code-language">Python</figcaption>');
+    expect(html).toContain('class="syntax-title">print</span>');
+    expect(html).toContain('class="syntax-string">&quot;Hello&quot;</span>');
+    expect(html).toContain('aria-label="Copy code"');
+    expect(html.indexOf("</figcaption>")).toBeLessThan(html.indexOf("<pre>"));
+    expect(html.indexOf("</pre>")).toBeLessThan(html.indexOf('aria-label="Copy code"'));
+  });
+  it("keeps inline code inline and unlabelled blocks plain", () => {
+    const html = render('Inline `const a = 1`.\n\n```\nconst a = 1\n```');
+    expect(html).toContain('<code>const a = 1</code>');
+    expect(html).toContain('response-code-language">Plain text</figcaption>');
+    expect(html).not.toContain('class="syntax-');
+  });
+  it("escapes executable HTML inside highlighted code", () => {
+    const html = render('```html\n<script>alert("x")</script>\n```');
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;");
+    expect(html).toContain("HTML code block");
+  });
+});

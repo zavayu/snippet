@@ -587,3 +587,24 @@ body {
 /* Status text must stay readable on both light and dark surfaces. */
 .text-warning { color: var(--status-warning); }
 .text-error { color: var(--status-error); }
+
+.markdown-response .response-code-block {
+  margin: .75rem 0;
+  overflow: hidden;
+  border: 1px solid var(--color-zinc-700);
+  border-radius: .65rem;
+  background: var(--color-zinc-950);
+}
+.response-code-language { padding: 8px 12px; border-bottom: 1px solid var(--color-zinc-700); color: var(--color-zinc-300); font-family: var(--ui-font); font-size: calc(var(--ui-font-size) - 1px); overflow-wrap: anywhere; }
+.markdown-response .response-code-block pre { margin: 0; border: 0; border-radius: 0; }
+.response-code-actions { display: flex; align-items: center; gap: 8px; padding: 4px 8px 8px; color: var(--color-zinc-400); font-family: var(--ui-font); font-size: calc(var(--ui-font-size) - 1px); }
+.response-code-copy { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; cursor: pointer; }
+.response-code-copy:hover { color: var(--color-zinc-100); background: var(--color-zinc-800); }
+.response-code-copy:focus-visible { outline: 2px solid var(--color-violet-400); outline-offset: 2px; }
+.syntax-keyword { color: var(--syntax-keyword); }
+.syntax-string { color: var(--syntax-string); }
+.syntax-number { color: var(--syntax-number); }
+.syntax-title { color: var(--syntax-title); }
+.syntax-comment { color: var(--syntax-comment); }
+.syntax-property { color: var(--syntax-property); }
+.syntax-meta { color: var(--syntax-meta); }

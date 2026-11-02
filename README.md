@@ -60,6 +60,10 @@ Window size group. Colors and fonts preview immediately; window sizes apply when
 you click **Save**. System
 mode follows Windows appearance changes automatically.
 
+Response code blocks show a language label, local syntax highlighting for common
+languages, and a copy icon below the code. Highlight colors adapt to the active
+theme and custom background. Unlabelled or unsupported languages stay plain text.
+
 Snippet runs from the system tray. **Esc** and the popup's close button hide it;
 **Quit Snippet** in the tray menu exits the app.
 
